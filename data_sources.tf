@@ -24,6 +24,6 @@ data "aws_subnets" "this" {
   }
 
   tags = {
-    Name = try(each.value.subnet_name, local.default_private_subnet_name)
+    Name = try(each.value.subnet_name, local.default_subnet_private_name)
   }
 }
