@@ -60,7 +60,7 @@ module "wrapper_eks" {
 The wrapper derives cluster names from `metadata` (e.g. `local.common_name` + cluster key) and discovers VPC and subnets by convention: VPC by tag `Name = <common_name_prefix>` and subnets by tag `Name = <common_name_prefix>-private*` or `-public*`. Override with `vpc_name`, `control_plane_subnet_ids`, or `subnet_ids` when you need custom network layout.
 
 
-<details><summary>Naming and override</summary>
+<details><summary>Configuration Code</summary>
 
 ```hcl
 # Cluster name becomes e.g. dmc-prd-my-cluster from metadata + key
@@ -84,7 +84,7 @@ eks_parameters = {
 Enable `karpenter.create = true` to create the controller IAM role, node IAM role (and instance profile), SQS queue for spot termination, pod identity association, and EKS access entry. The wrapper also applies subnet and security group discovery tags (`karpenter.sh/discovery`) so you can reference them in EC2NodeClass. Install the Karpenter Helm chart and define Provisioner/NodePool separately.
 
 
-<details><summary>Enable Karpenter resources</summary>
+<details><summary>Configuration Code</summary>
 
 ```hcl
 "my-cluster" = {
@@ -107,97 +107,7 @@ Enable `karpenter.create = true` to create the controller IAM role, node IAM rol
 
 </details>
 
-
-### AWS Load Balancer Controller subnet tagging
-Set `aws_load_balancer_controller.create = true` and choose `public_ingress_create` and/or `private_ingress_create`. The wrapper discovers the relevant subnets (by default using the same naming convention as the cluster) and applies `kubernetes.io/role/elb` and `kubernetes.io/role/internal-elb` so the AWS Load Balancer Controller can create NLBs/ALBs in the right subnets. Optional custom subnet names and tags are supported.
-
-
-<details><summary>Enable subnet tagging for ALB/NLB</summary>
-
-```hcl
-aws_load_balancer_controller = {
-  create                  = true
-  public_ingress_create   = true
-  private_ingress_create  = true
-  # Optional: custom subnet name pattern or tags
-  # public_subnet_name  = "*-public*"
-  # private_subnet_name = "*-private*"
-  # aws_load_balancer_controller_vpc_public_subnet_tags  = { "kubernetes.io/role/elb" = 1 }
-  # aws_load_balancer_controller_vpc_private_subnet_tags = { "kubernetes.io/role/internal-elb" = 1 }
-}
-```
-
-
-</details>
-
-
-### EKS Auto Mode
-Set `cluster_compute_config.enabled = true` and specify `node_pools` (e.g. `["general-purpose"]`). The control plane manages capacity; no managed node groups or Karpenter are required for basic workloads.
-
-
-<details><summary>Cluster with Auto Mode only</summary>
-
-```hcl
-"my-cluster" = {
-  create = true
-  cluster_compute_config = {
-    enabled    = true
-    node_pools = ["general-purpose"]
-  }
-}
-```
-
-
-</details>
-
-
-
-
-## 📑 Inputs
-| Name                                                | Description                                                                                                                    | Type           | Default                                                               | Required |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------- | --------------------------------------------------------------------- | -------- |
-| create                                              | Whether to create this EKS cluster.                                                                                            | `bool`         | `true`                                                                | no       |
-| cluster_name                                        | EKS cluster name.                                                                                                              | `string`       | `"${local.common_name}-${each.key}"`                                  | no       |
-| cluster_version                                     | Kubernetes API version (e.g. `"1.33"`).                                                                                        | `string`       | `"1.33"`                                                              | no       |
-| vpc_name                                            | VPC name (tag `Name`) used to discover VPC.                                                                                    | `string`       | `local.default_vpc_name`                                              | no       |
-| subnet_ids                                          | Explicit list of subnet IDs for node groups. If empty, subnets are discovered by tag.                                          | `list(string)` | (discovered)                                                          | no       |
-| control_plane_subnet_ids                            | Subnet IDs for the control plane.                                                                                              | `list(string)` | `[]`                                                                  | no       |
-| cluster_endpoint_public_access                      | Enable public API endpoint.                                                                                                    | `bool`         | `false`                                                               | no       |
-| cluster_endpoint_private_access                     | Enable private API endpoint.                                                                                                   | `bool`         | `true`                                                                | no       |
-| cluster_endpoint_public_access_cidrs                | CIDRs allowed to reach the public endpoint.                                                                                    | `list(string)` | `["0.0.0.0/0"]`                                                       | no       |
-| cluster_enabled_log_types                           | Control plane log types: `api`, `audit`, `authenticator`, `controllerManager`, `scheduler`.                                    | `list(string)` | `["api", "audit", "authenticator", "controllerManager", "scheduler"]` | no       |
-| create_cloudwatch_log_group                         | Create a CloudWatch log group for control plane logs.                                                                          | `bool`         | `true`                                                                | no       |
-| cloudwatch_log_group_retention_in_days              | Retention in days for the control plane log group.                                                                             | `number`       | `30`                                                                  | no       |
-| cluster_addons                                      | Map of addon name → config (e.g. `coredns = {}`, `vpc-cni = { before_compute = true }`).                                       | `map(any)`     | coredns, kube-proxy, vpc-cni, eks-pod-identity-agent                  | no       |
-| enable_cluster_creator_admin_permissions            | Grant cluster creator IAM principal full admin via EKS access entries.                                                         | `bool`         | `true`                                                                | no       |
-| access_entries                                      | Map of access entry key → `principal_arn`, `policy_associations`, etc. for explicit cluster access.                            | `map(any)`     | `{}`                                                                  | no       |
-| managed_node_groups                                 | Map of node group name → config (`ami_type`, `instance_types`, `capacity_type`, `min_size`, `desired_size`, `max_size`, etc.). | `map(any)`     | `{}`                                                                  | no       |
-| cluster_compute_config                              | EKS Auto Mode: set `enabled = true` and `node_pools = ["general-purpose"]` to use managed node pools only.                     | `object`       | `{}`                                                                  | no       |
-| tags                                                | Tags applied to cluster and related resources.                                                                                 | `map(string)`  | `local.common_tags`                                                   | no       |
-| karpenter                                           | Config for Karpenter AWS resources. Set `create = true` to create IAM roles, SQS queue, pod identity, and discovery tags.      | `object`       | `{}`                                                                  | no       |
-| karpenter.create                                    | Enable creation of Karpenter AWS resources (controller IAM role, node IAM role, SQS, subnet/SG tags).                          | `bool`         | `false`                                                               | no       |
-| karpenter.vpc_subnet_tag_value                      | Custom value for subnet tag `karpenter.sh/discovery`; use in EC2NodeClass `subnetSelectorTerms`.                               | `string`       | (cluster name)                                                        | no       |
-| karpenter.security_group_node_tag_value             | Custom value for node security group tag `karpenter.sh/discovery`; use in EC2NodeClass `securityGroupSelectorTerms`.           | `string`       | (cluster name)                                                        | no       |
-| aws_load_balancer_controller                        | Config for subnet tagging so the AWS LB controller can create NLBs/ALBs.                                                       | `object`       | `{}`                                                                  | no       |
-| aws_load_balancer_controller.create                 | Enable tagging of subnets for the AWS Load Balancer Controller.                                                                | `bool`         | `false`                                                               | no       |
-| aws_load_balancer_controller.public_ingress_create  | Tag public subnets with `kubernetes.io/role/elb`.                                                                              | `bool`         | —                                                                     | no       |
-| aws_load_balancer_controller.private_ingress_create | Tag private subnets with `kubernetes.io/role/internal-elb`.                                                                    | `bool`         | —                                                                     | no       |
-| aws_load_balancer_controller.public_subnet_name     | Tag filter for public subnets (e.g. `"*-public*"`).                                                                            | `string`       | (from metadata)                                                       | no       |
-| aws_load_balancer_controller.private_subnet_name    | Tag filter for private subnets (e.g. `"*-private*"`).                                                                          | `string`       | (from metadata)                                                       | no       |
-
-
-
-
-
-
-
-## ⚠️ Important Notes
-- **⚠️ VPC and subnets:** The module discovers VPC and subnets by default using `vpc_name` and subnet tags. Override with `control_plane_subnet_ids` and `subnet_ids` if needed.
-- **⚠️ Access:** Use `access_entries` or `enable_cluster_creator_admin_permissions = true` to grant cluster access.
-- **⚠️ Karpenter:** This module only creates the AWS prerequisites (IAM, SQS, discovery tags). Install the Karpenter controller (e.g. via Helm) and create NodePool and EC2NodeClass in the cluster yourself.
-
-<details>
-<summary>How to install Karpenter (quick start)</summary>
+<details><summary>How to install Karpenter (quick start)</summary>
 
 # Karpenter: quick install on an EKS cluster
 
@@ -346,7 +256,97 @@ kubectl get pods -n default -w
 kubectl get nodes -w
 ```
 
+
 </details>
+
+
+### AWS Load Balancer Controller subnet tagging
+Set `aws_load_balancer_controller.create = true` and choose `public_ingress_create` and/or `private_ingress_create`. The wrapper discovers the relevant subnets (by default using the same naming convention as the cluster) and applies `kubernetes.io/role/elb` and `kubernetes.io/role/internal-elb` so the AWS Load Balancer Controller can create NLBs/ALBs in the right subnets. Optional custom subnet names and tags are supported.
+
+
+<details><summary>Configuration Code</summary>
+
+```hcl
+aws_load_balancer_controller = {
+  create                  = true
+  public_ingress_create   = true
+  private_ingress_create  = true
+  # Optional: custom subnet name pattern or tags
+  # public_subnet_name  = "*-public*"
+  # private_subnet_name = "*-private*"
+  # aws_load_balancer_controller_vpc_public_subnet_tags  = { "kubernetes.io/role/elb" = 1 }
+  # aws_load_balancer_controller_vpc_private_subnet_tags = { "kubernetes.io/role/internal-elb" = 1 }
+}
+```
+
+
+</details>
+
+
+### EKS Auto Mode
+Set `cluster_compute_config.enabled = true` and specify `node_pools` (e.g. `["general-purpose"]`). The control plane manages capacity; no managed node groups or Karpenter are required for basic workloads.
+
+
+<details><summary>Configuration Code</summary>
+
+```hcl
+"my-cluster" = {
+  create = true
+  cluster_compute_config = {
+    enabled    = true
+    node_pools = ["general-purpose"]
+  }
+}
+```
+
+
+</details>
+
+
+
+
+## 📑 Inputs
+| Name                                                | Description                                                                                                                    | Type           | Default                                                               | Required |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------- | --------------------------------------------------------------------- | -------- |
+| create                                              | Whether to create this EKS cluster.                                                                                            | `bool`         | `true`                                                                | no       |
+| cluster_name                                        | EKS cluster name.                                                                                                              | `string`       | `"${local.common_name}-${each.key}"`                                  | no       |
+| cluster_version                                     | Kubernetes API version (e.g. `"1.33"`).                                                                                        | `string`       | `"1.33"`                                                              | no       |
+| vpc_name                                            | VPC name (tag `Name`) used to discover VPC.                                                                                    | `string`       | `local.default_vpc_name`                                              | no       |
+| subnet_ids                                          | Explicit list of subnet IDs for node groups. If empty, subnets are discovered by tag.                                          | `list(string)` | (discovered)                                                          | no       |
+| control_plane_subnet_ids                            | Subnet IDs for the control plane.                                                                                              | `list(string)` | `[]`                                                                  | no       |
+| cluster_endpoint_public_access                      | Enable public API endpoint.                                                                                                    | `bool`         | `false`                                                               | no       |
+| cluster_endpoint_private_access                     | Enable private API endpoint.                                                                                                   | `bool`         | `true`                                                                | no       |
+| cluster_endpoint_public_access_cidrs                | CIDRs allowed to reach the public endpoint.                                                                                    | `list(string)` | `["0.0.0.0/0"]`                                                       | no       |
+| cluster_enabled_log_types                           | Control plane log types: `api`, `audit`, `authenticator`, `controllerManager`, `scheduler`.                                    | `list(string)` | `["api", "audit", "authenticator", "controllerManager", "scheduler"]` | no       |
+| create_cloudwatch_log_group                         | Create a CloudWatch log group for control plane logs.                                                                          | `bool`         | `true`                                                                | no       |
+| cloudwatch_log_group_retention_in_days              | Retention in days for the control plane log group.                                                                             | `number`       | `30`                                                                  | no       |
+| cluster_addons                                      | Map of addon name → config (e.g. `coredns = {}`, `vpc-cni = { before_compute = true }`).                                       | `map(any)`     | coredns, kube-proxy, vpc-cni, eks-pod-identity-agent                  | no       |
+| enable_cluster_creator_admin_permissions            | Grant cluster creator IAM principal full admin via EKS access entries.                                                         | `bool`         | `true`                                                                | no       |
+| access_entries                                      | Map of access entry key → `principal_arn`, `policy_associations`, etc. for explicit cluster access.                            | `map(any)`     | `{}`                                                                  | no       |
+| managed_node_groups                                 | Map of node group name → config (`ami_type`, `instance_types`, `capacity_type`, `min_size`, `desired_size`, `max_size`, etc.). | `map(any)`     | `{}`                                                                  | no       |
+| cluster_compute_config                              | EKS Auto Mode: set `enabled = true` and `node_pools = ["general-purpose"]` to use managed node pools only.                     | `object`       | `{}`                                                                  | no       |
+| tags                                                | Tags applied to cluster and related resources.                                                                                 | `map(string)`  | `local.common_tags`                                                   | no       |
+| karpenter                                           | Config for Karpenter AWS resources. Set `create = true` to create IAM roles, SQS queue, pod identity, and discovery tags.      | `object`       | `{}`                                                                  | no       |
+| karpenter.create                                    | Enable creation of Karpenter AWS resources (controller IAM role, node IAM role, SQS, subnet/SG tags).                          | `bool`         | `false`                                                               | no       |
+| karpenter.vpc_subnet_tag_value                      | Custom value for subnet tag `karpenter.sh/discovery`; use in EC2NodeClass `subnetSelectorTerms`.                               | `string`       | (cluster name)                                                        | no       |
+| karpenter.security_group_node_tag_value             | Custom value for node security group tag `karpenter.sh/discovery`; use in EC2NodeClass `securityGroupSelectorTerms`.           | `string`       | (cluster name)                                                        | no       |
+| aws_load_balancer_controller                        | Config for subnet tagging so the AWS LB controller can create NLBs/ALBs.                                                       | `object`       | `{}`                                                                  | no       |
+| aws_load_balancer_controller.create                 | Enable tagging of subnets for the AWS Load Balancer Controller.                                                                | `bool`         | `false`                                                               | no       |
+| aws_load_balancer_controller.public_ingress_create  | Tag public subnets with `kubernetes.io/role/elb`.                                                                              | `bool`         | —                                                                     | no       |
+| aws_load_balancer_controller.private_ingress_create | Tag private subnets with `kubernetes.io/role/internal-elb`.                                                                    | `bool`         | —                                                                     | no       |
+| aws_load_balancer_controller.public_subnet_name     | Tag filter for public subnets (e.g. `"*-public*"`).                                                                            | `string`       | (from metadata)                                                       | no       |
+| aws_load_balancer_controller.private_subnet_name    | Tag filter for private subnets (e.g. `"*-private*"`).                                                                          | `string`       | (from metadata)                                                       | no       |
+
+
+
+
+
+
+
+## ⚠️ Important Notes
+- **⚠️ VPC and subnets:** The module discovers VPC and subnets by default using `vpc_name` and subnet tags. Override with `control_plane_subnet_ids` and `subnet_ids` if needed.
+- **⚠️ Access:** Use `access_entries` or `enable_cluster_creator_admin_permissions = true` to grant cluster access.
+- **⚠️ Karpenter:** This module only creates the AWS prerequisites (IAM, SQS, discovery tags). Install the Karpenter controller (e.g. via Helm) and create NodePool and EC2NodeClass in the cluster yourself.
 
 
 
