@@ -7,7 +7,7 @@ data "aws_subnets" "elb_private" {
   }
 
   tags = {
-    Name = try(each.value.aws_load_balancer_controller.private_subnet_name, local.default_subnet_private_name)
+    Name = try(each.value.aws_load_balancer_controller.private_subnet_name, local.default_private_subnet_name)
   }
 }
 
@@ -20,7 +20,7 @@ data "aws_subnets" "elb_public" {
   }
 
   tags = {
-    Name = try(each.value.aws_load_balancer_controller.public_subnet_name, local.default_subnet_public_name)
+    Name = try(each.value.aws_load_balancer_controller.public_subnet_name, local.default_public_subnet_name)
   }
 }
 
