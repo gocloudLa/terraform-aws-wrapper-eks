@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/gocloudLa/terraform-aws-wrapper-eks/compare/v1.0.0...v1.0.1) (2026-02-26)
+
+
+### Bug Fixes
+
+* **eks:** correct minor errors ([#3](https://github.com/gocloudLa/terraform-aws-wrapper-eks/issues/3)) ([2038a6d](https://github.com/gocloudLa/terraform-aws-wrapper-eks/commit/2038a6d8f17c551f27ba46c64a57a618e0c4eb4d))
+
 ## 1.0.0 (2026-02-12)
 
 
