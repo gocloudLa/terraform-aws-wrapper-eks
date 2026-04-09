@@ -135,9 +135,11 @@ module "wrapper_eks" {
           }
         }
 
-        # SSO role example — users entering via AWS Identity Center
+        # SSO role example — users entering via AWS Identity Center (IAM Identity Center)
+        # ARN format: arn:aws:iam::<account>:role/aws-reserved/sso.amazonaws.com/<region>/AWSReservedSSO_<permission-set>_<suffix>
+        # Find the exact ARN with: aws iam list-roles --path-prefix /aws-reserved/sso.amazonaws.com/
         # sso-devops = {
-        #   principal_arn = "arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_DevOps_abc123"
+        #   principal_arn = "arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/us-east-1/AWSReservedSSO_DevOps_abc123"
         #   policy_associations = {
         #     cluster-admin = {
         #       policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
