@@ -82,6 +82,82 @@ module "wrapper_eks" {
         node_pools = ["general-purpose"]
       }
     }
+
+    ex-access-entries = {
+      # Example: role-based access control using EKS Access Entries
+      create = false
+
+      # Safe to disable when access_entries already includes a cluster-admin role.
+      # WARNING: set to true if no access_entries grant AmazonEKSClusterAdminPolicy,
+      # otherwise you lose cluster access.
+      enable_cluster_creator_admin_permissions = false
+
+      access_entries = {
+
+        # Full cluster admin — SRE/Platform team role (scope: entire cluster)
+        sre-platform = {
+          principal_arn = "arn:aws:iam::111111111111:role/SREPlatformRole"
+          policy_associations = {
+            cluster-admin = {
+              policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+              access_scope = {
+                type = "cluster"
+              }
+            }
+          }
+        }
+
+        # Edit access — Dev team role (scope: only app-backend and app-frontend namespaces)
+        dev-team = {
+          principal_arn = "arn:aws:iam::111111111111:role/DevTeamRole"
+          policy_associations = {
+            ns-edit = {
+              policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+              access_scope = {
+                type       = "namespace"
+                namespaces = ["app-backend", "app-frontend"]
+              }
+            }
+          }
+        }
+
+        # Read-only access — QA role (scope: only staging namespace)
+        qa-readonly = {
+          principal_arn = "arn:aws:iam::111111111111:role/QARole"
+          policy_associations = {
+            ns-view = {
+              policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+              access_scope = {
+                type       = "namespace"
+                namespaces = ["staging"]
+              }
+            }
+          }
+        }
+
+        # SSO role example — users entering via AWS Identity Center
+        # sso-devops = {
+        #   principal_arn = "arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_DevOps_abc123"
+        #   policy_associations = {
+        #     cluster-admin = {
+        #       policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+        #       access_scope = { type = "cluster" }
+        #     }
+        #   }
+        # }
+      }
+
+      managed_node_groups = {
+        default = {
+          ami_type       = "AL2023_x86_64_STANDARD"
+          instance_types = ["t3.medium"]
+          capacity_type  = "ON_DEMAND"
+          min_size       = 1
+          desired_size   = 2
+          max_size       = 3
+        }
+      }
+    }
   }
 
   eks_defaults = var.eks_defaults
