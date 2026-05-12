@@ -1,6 +1,6 @@
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "v21.9.0"
+  version = "21.20.0"
 
   for_each = var.eks_parameters
 
