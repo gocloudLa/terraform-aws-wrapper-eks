@@ -15,7 +15,7 @@ locals {
 
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
-  version = "21.9.0"
+  version = "21.24.0"
 
   for_each = var.eks_parameters
 
