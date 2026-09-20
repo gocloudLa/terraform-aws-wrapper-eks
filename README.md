@@ -16,7 +16,7 @@ The Terraform wrapper for EKS simplifies the configuration of Amazon Elastic Kub
 
 - 🌐 [AWS Load Balancer Controller subnet tagging](#aws-load-balancer-controller-subnet-tagging) - Automatic tagging of subnets for public and private ingress
 
-- 🪪 [EKS Pod Identity](#eks-pod-identity) - IAM roles and EKS associations for LBC, EBS CSI, and custom service accounts
+- 🪪 [EKS Pod Identity](#eks-pod-identity) - IAM roles and EKS associations for service accounts
 
 - 📦 [EKS Auto Mode](#eks-auto-mode) - Use EKS managed node pools without managing node groups
 
@@ -132,10 +132,9 @@ aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION"
 export CLUSTER_ENDPOINT=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$REGION" --query "cluster.endpoint" --output text)
 ```
 
-## 4) Create namespace and add Helm repo
+## 4) Add Helm repo
 
 ```bash
-kubectl create namespace karpenter
 helm repo add karpenter https://charts.karpenter.sh
 helm repo update
 ```
@@ -158,7 +157,7 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter --vers
 ## 6) Verify
 
 ```bash
-kubectl get pods -n karpenter
+kubectl get pods -n kube-system
 ```
 
 ## 7) Example NodeClass and NodePool
@@ -290,11 +289,17 @@ eks_parameters = {
 
 
 ### EKS Pod Identity
-Declare entries in `pod_identities` (default `{}`). Each key is one IAM role plus an EKS Pod Identity association. This wrapper does not install Helm or call the Kubernetes API. The ServiceAccount does not need to exist yet; a private cluster endpoint does not block associations.
+Declare entries in `pod_identities` (default `{}`). Each key creates one IAM role and one EKS Pod Identity association (`namespace` + `service_account`). The ServiceAccount does not need to exist yet. Associations use the EKS API, so a private cluster endpoint does not block them. This wrapper does not install Helm charts or talk to the Kubernetes API.
 
-Use `attach_aws_lb_controller_policy` / `attach_aws_ebs_csi_policy` / `attach_aws_efs_csi_policy` / `attach_aws_vpc_cni_policy` / `attach_mountpoint_s3_csi_policy` for those AWS policies, or `policy_statements` for a custom policy. Role name defaults to `${common_name}-${cluster}-${key}`. Include `eks-pod-identity-agent` in `cluster_addons`. Helm for the AWS Load Balancer Controller is the caller's job; the chart ServiceAccount must match. Karpenter is unchanged.
+Attach managed policies with `attach_aws_lb_controller_policy`, `attach_aws_ebs_csi_policy`, `attach_aws_efs_csi_policy`, `attach_aws_vpc_cni_policy`, or `attach_mountpoint_s3_csi_policy`. Use `policy_statements` or `additional_policy_arns` for custom access. The IAM role name defaults to `${common_name}-${cluster}-${key}`.
 
-EKS add-on names: `vpc-cni`, `coredns`, `kube-proxy`, `eks-pod-identity-agent`, `aws-ebs-csi-driver`, `aws-efs-csi-driver`, `aws-mountpoint-s3-csi-driver`, `metrics-server`, `kube-state-metrics`, `aws-secrets-store-csi-driver-provider`. VPC CNI, CoreDNS, kube-proxy, the Pod Identity Agent, Metrics Server, and kube-state-metrics do not need Pod Identity (VPC CNI uses the node IAM role). Secrets Store CSI mounts secrets as the **workload** SA (`policy_statements` / `additional_policy_arns`), not the provider add-on.
+Enable the agent with `cluster_addons.eks-pod-identity-agent = { before_compute = true }`. Also set `vpc-cni = { before_compute = true }` so nodes get CNI before compute.
+
+`vpc-cni`, `coredns`, `kube-proxy`, `eks-pod-identity-agent`, `metrics-server`, and `kube-state-metrics` do not use `pod_identities` (VPC CNI uses the node IAM role). For `aws-secrets-store-csi-driver-provider`, grant IAM on the workload ServiceAccount, not on the provider add-on.
+
+`aws-ebs-csi-driver`, `aws-efs-csi-driver`, and `aws-mountpoint-s3-csi-driver` require the association before the add-on becomes Active. Create those add-ons in a second apply after `pod_identities`.
+
+AWS Load Balancer Controller: tag subnets with `aws_load_balancer_controller`, declare IAM in `pod_identities`, and install the Helm chart with a ServiceAccount that matches `service_account`. Karpenter IAM and its association are set under `karpenter`, not under `pod_identities`.
 
 
 <details><summary>Configuration Code</summary>
@@ -303,8 +308,9 @@ EKS add-on names: `vpc-cni`, `coredns`, `kube-proxy`, `eks-pod-identity-agent`, 
 eks_parameters = {
   "my-cluster" = {
     cluster_addons = {
+      vpc-cni                = { before_compute = true }
       eks-pod-identity-agent = { before_compute = true }
-      aws-ebs-csi-driver     = {}
+      # Second apply: aws-ebs-csi-driver, aws-efs-csi-driver, aws-mountpoint-s3-csi-driver
     }
 
     pod_identities = {
@@ -404,7 +410,7 @@ eks_parameters = {
 - **⚠️ Access:** Use `access_entries` or `enable_cluster_creator_admin_permissions = true` to grant cluster access.
 - **⚠️ Karpenter:** This module only creates the AWS prerequisites (IAM, SQS, discovery tags). Install the Karpenter controller (e.g. via Helm) and create NodePool and EC2NodeClass in the cluster yourself.
 - **⚠️ AWS Load Balancer Controller:** `create` only tags subnets. Put the controller in `pod_identities` if you need IAM. Helm is the caller's responsibility; the ServiceAccount must match. A private API endpoint does not block Pod Identity associations (EKS API, not kube-apiserver).
-- **⚠️ Pod Identity:** Include `eks-pod-identity-agent` in `cluster_addons` when using `pod_identities`. Karpenter keeps its own association and is not listed here.
+- **⚠️ Pod Identity:** Set `cluster_addons.eks-pod-identity-agent = { before_compute = true }`. Create `aws-ebs-csi-driver`, `aws-efs-csi-driver`, and `aws-mountpoint-s3-csi-driver` in a second apply after associations exist. Karpenter associations are configured with `karpenter`, not `pod_identities`.
 
 
 
