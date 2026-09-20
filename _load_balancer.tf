@@ -51,9 +51,8 @@ locals {
         subnet_id = subnet_id
         # Se busca, en la configuración del cluster, los tags para el controlador.
         # Si no se definen, se usa el valor por defecto para LB internos.
-        tags = lookup(
-          try(values.aws_load_balancer_controller, {}),
-          "aws_load_balancer_controller_vpc_private_subnet_tags",
+        tags = try(
+          values.aws_load_balancer_controller.aws_load_balancer_controller_vpc_private_subnet_tags,
           local.aws_load_balancer_controller_internal_default_tag
         )
       } if try(values.aws_load_balancer_controller.private_ingress_create, false)
@@ -67,9 +66,8 @@ locals {
         cluster   = cluster
         subnet_id = subnet_id
         # Se usa la configuración específica para subnets públicas o el valor por defecto.
-        tags = lookup(
-          try(values.aws_load_balancer_controller, {}),
-          "aws_load_balancer_controller_vpc_public_subnet_tags",
+        tags = try(
+          values.aws_load_balancer_controller.aws_load_balancer_controller_vpc_public_subnet_tags,
           local.aws_load_balancer_controller_internet_default_tag
         )
       } if try(values.aws_load_balancer_controller.public_ingress_create, false)
@@ -97,5 +95,4 @@ resource "aws_ec2_tag" "aws_load_balancer_controller_subnet_extra_tags" {
   resource_id = each.value.subnet_id
   key         = each.value.tag_key
   value       = each.value.tag_value
-
 }

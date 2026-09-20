@@ -7,3 +7,4 @@ key_features:
   - "**Karpenter**: Cluster with Karpenter AWS resources (IAM, SQS, tags) and a controller node group; deploy Karpenter Helm separately."
   - "**Defaults and addons**: Cluster version, endpoint access, control plane logging, CoreDNS, kube-proxy, VPC CNI, EKS Pod Identity Agent."
   - "**AWS Load Balancer Controller**: Optional public/private subnet tagging for ingress (enabled in the node-group cluster)."
+  - "**EKS Pod Identity**: `pod_identities` for LBC, EBS CSI, and a custom S3 example. Helm for LBC is installed outside this module."

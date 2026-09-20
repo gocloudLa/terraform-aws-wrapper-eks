@@ -12,23 +12,17 @@ module_badges:
     alt: "Terraform Registry"
 quick_start: |
   ```hcl
-  module "wrapper_eks" {
-    source = "gocloudLa/wrapper-eks/aws"
-
-    metadata = local.metadata
-
-    eks_parameters = {
-      "my-cluster" = {
-        create = true
-        managed_node_groups = {
-          default = {
-            ami_type       = "AL2023_x86_64_STANDARD"
-            instance_types = ["t3.medium"]
-            capacity_type  = "ON_DEMAND"
-            min_size       = 1
-            desired_size   = 2
-            max_size       = 3
-          }
+  eks_parameters = {
+    "my-cluster" = {
+      create = true
+      managed_node_groups = {
+        default = {
+          ami_type       = "AL2023_x86_64_STANDARD"
+          instance_types = ["t3.medium"]
+          capacity_type  = "ON_DEMAND"
+          min_size       = 1
+          desired_size   = 2
+          max_size       = 3
         }
       }
     }
@@ -65,18 +59,20 @@ features:
       - title: Configuration Code
         code: |
           ```hcl
-          "my-cluster" = {
-            create = true
-            karpenter = {
+          eks_parameters = {
+            "my-cluster" = {
               create = true
-              # Optional: custom tag values for NodeClass subnet/SG selectors
-              # vpc_subnet_tag_value        = "my-value"
-              # security_group_node_tag_value = "my-value"
-            }
-            managed_node_groups = {
-              karpenter-controller = {
-                labels = { "karpenter.sh/controller" = "true" }
-                # ...
+              karpenter = {
+                create = true
+                # Optional: custom tag values for NodeClass subnet/SG selectors
+                # vpc_subnet_tag_value        = "my-value"
+                # security_group_node_tag_value = "my-value"
+              }
+              managed_node_groups = {
+                karpenter-controller = {
+                  labels = { "karpenter.sh/controller" = "true" }
+                  # ...
+                }
               }
             }
           }
@@ -107,10 +103,9 @@ features:
           export CLUSTER_ENDPOINT=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$REGION" --query "cluster.endpoint" --output text)
           ```
 
-          ## 4) Create namespace and add Helm repo
+          ## 4) Add Helm repo
 
           ```bash
-          kubectl create namespace karpenter
           helm repo add karpenter https://charts.karpenter.sh
           helm repo update
           ```
@@ -133,7 +128,7 @@ features:
           ## 6) Verify
 
           ```bash
-          kubectl get pods -n karpenter
+          kubectl get pods -n kube-system
           ```
 
           ## 7) Example NodeClass and NodePool
@@ -233,20 +228,270 @@ features:
     title: AWS Load Balancer Controller subnet tagging
     short_description: Automatic tagging of subnets for public and private ingress
     long_description: |
-      Set `aws_load_balancer_controller.create = true` and choose `public_ingress_create` and/or `private_ingress_create`. The wrapper discovers the relevant subnets (by default using the same naming convention as the cluster) and applies `kubernetes.io/role/elb` and `kubernetes.io/role/internal-elb` so the AWS Load Balancer Controller can create NLBs/ALBs in the right subnets. Optional custom subnet names and tags are supported.
+      Set `aws_load_balancer_controller.create = true` and choose `public_ingress_create` and/or `private_ingress_create`. The wrapper discovers the relevant subnets (by default using the same naming convention as the cluster) and applies `kubernetes.io/role/elb` and `kubernetes.io/role/internal-elb` so the AWS Load Balancer Controller can create NLBs/ALBs in the right subnets. Optional custom subnet names and tags are supported. `create` only tags subnets; it does not create IAM roles or Pod Identity associations.
+
+      - https://docs.aws.amazon.com/eks/latest/userguide/lbc-helm.html
+      - https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/gateway/gateway/
     examples:
       - title: Configuration Code
         code: |
           ```hcl
-          aws_load_balancer_controller = {
-            create                  = true
-            public_ingress_create   = true
-            private_ingress_create  = true
-            # Optional: custom subnet name pattern or tags
-            # public_subnet_name  = "*-public*"
-            # private_subnet_name = "*-private*"
-            # aws_load_balancer_controller_vpc_public_subnet_tags  = { "kubernetes.io/role/elb" = 1 }
-            # aws_load_balancer_controller_vpc_private_subnet_tags = { "kubernetes.io/role/internal-elb" = 1 }
+          eks_parameters = {
+            "my-cluster" = {
+              aws_load_balancer_controller = {
+                create                  = true
+                public_ingress_create   = true
+                private_ingress_create  = true
+                # Optional: custom subnet name pattern or tags
+                # public_subnet_name  = "*-public*"
+                # private_subnet_name = "*-private*"
+                # aws_load_balancer_controller_vpc_public_subnet_tags  = { "kubernetes.io/role/elb" = 1 }
+                # aws_load_balancer_controller_vpc_private_subnet_tags = { "kubernetes.io/role/internal-elb" = 1 }
+              }
+            }
+          }
+          ```
+      - title: How to install AWS Load Balancer Controller (Gateway API)
+        code: |
+          # AWS Load Balancer Controller: Gateway API on an EKS cluster
+
+          Subnet tags and Pod Identity come from this wrapper. Install CRDs, Helm, then Gateway and HTTPRoutes. Adjust names, region, VPC, ACM ARN, and hostnames.
+
+          Helm: https://docs.aws.amazon.com/eks/latest/userguide/lbc-helm.html
+          Gateway CRDs: https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/gateway/gateway/
+
+          ## 1) Base variables
+
+          ```bash
+          export CLUSTER_NAME="dmc-prd-my-cluster"
+          export REGION="us-east-1"
+          export VPC_ID="vpc-xxxxxxxx"
+          export ACM_CERT_ARN="arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+          export LBC_CHART_VERSION="3.5.0"
+          ```
+
+          ## 2) Connect to the cluster
+
+          ```bash
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION"
+          ```
+
+          ## 3) Gateway API CRDs and LBC Gateway CRDs
+
+          ```bash
+          kubectl apply --server-side=true -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v3.5.0/config/crd/gateway/gateway-crds.yaml
+          ```
+
+          ## 4) Install the Helm chart (Pod Identity already created by IaC)
+
+          Use ServiceAccount name `aws-load-balancer-controller` in `kube-system` (same as `pod_identities`). Do not set `eks.amazonaws.com/role-arn`. `defaultTargetType: ip` is required for ClusterIP Services with VPC CNI.
+
+          ```bash
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --namespace kube-system \
+            --version "${LBC_CHART_VERSION}" \
+            --set clusterName="${CLUSTER_NAME}" \
+            --set region="${REGION}" \
+            --set vpcId="${VPC_ID}" \
+            --set defaultTargetType=ip \
+            --set serviceAccount.create=true \
+            --set serviceAccount.name=aws-load-balancer-controller
+          kubectl -n kube-system rollout status deploy/aws-load-balancer-controller
+          ```
+
+          ## 5) Public Gateway (one ALB)
+
+          ACM certificate must be in the same region as the cluster. LBC reads the cert from `LoadBalancerConfiguration`, not from `certificateRefs`.
+
+          ```bash
+          cat <<EOF | kubectl apply -f -
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: GatewayClass
+          metadata:
+            name: aws-alb
+          spec:
+            controllerName: gateway.k8s.aws/alb
+          ---
+          apiVersion: gateway.k8s.aws/v1
+          kind: LoadBalancerConfiguration
+          metadata:
+            name: public-alb
+            namespace: default
+          spec:
+            scheme: internet-facing
+            listenerConfigurations:
+              - protocolPort: HTTPS:443
+                defaultCertificate: ${ACM_CERT_ARN}
+          ---
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: Gateway
+          metadata:
+            name: public-alb
+            namespace: default
+          spec:
+            gatewayClassName: aws-alb
+            infrastructure:
+              parametersRef:
+                group: gateway.k8s.aws
+                kind: LoadBalancerConfiguration
+                name: public-alb
+            listeners:
+              - name: http
+                protocol: HTTP
+                port: 80
+                allowedRoutes:
+                  namespaces:
+                    from: All
+              - name: https
+                protocol: HTTPS
+                port: 443
+                allowedRoutes:
+                  namespaces:
+                    from: All
+          EOF
+          kubectl get gateway public-alb -n default
+          ```
+
+          Wait until `ADDRESS` is an `*.elb.amazonaws.com` hostname and Gateway `Accepted=True`.
+
+          ## 6) Sample app (HTTPRoute rules on the same ALB)
+
+          ```bash
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: hello
+            namespace: default
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: hello
+            template:
+              metadata:
+                labels:
+                  app: hello
+              spec:
+                containers:
+                  - name: hello
+                    image: public.ecr.aws/nginx/nginx:stable
+                    ports:
+                      - containerPort: 80
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: hello
+            namespace: default
+          spec:
+            selector:
+              app: hello
+            ports:
+              - port: 80
+                targetPort: 80
+          ---
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: http-to-https
+            namespace: default
+          spec:
+            parentRefs:
+              - name: public-alb
+                sectionName: http
+            hostnames:
+              - hello.example.com
+            rules:
+              - filters:
+                  - type: RequestRedirect
+                    requestRedirect:
+                      scheme: https
+                      statusCode: 301
+          ---
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: hello
+            namespace: default
+          spec:
+            parentRefs:
+              - name: public-alb
+                sectionName: https
+            hostnames:
+              - hello.example.com
+            rules:
+              - backendRefs:
+                  - name: hello
+                    port: 80
+          EOF
+          ```
+
+          Further apps: Deployment + Service + HTTPRoute with `parentRefs.name: public-alb`.
+
+          ## 7) Test without DNS
+
+          ```bash
+          HOST=hello.example.com
+          ALB=$(kubectl -n default get gateway public-alb -o jsonpath='{.status.addresses[0].value}')
+          IP=$(dig +short "$ALB" | head -n1)
+          curl -v --resolve "${HOST}:443:${IP}" "https://${HOST}/"
+          ```
+
+          The ACM certificate must include `HOST` (or a matching wildcard). `--resolve` sends SNI and Host without creating a DNS record.
+
+  - icon: 🪪
+    title: EKS Pod Identity
+    short_description: IAM roles and EKS associations for service accounts
+    long_description: |
+      Declare entries in `pod_identities` (default `{}`). Each key creates one IAM role and one EKS Pod Identity association (`namespace` + `service_account`). The ServiceAccount does not need to exist yet. Associations use the EKS API, so a private cluster endpoint does not block them. This wrapper does not install Helm charts or talk to the Kubernetes API.
+
+      Attach managed policies with `attach_aws_lb_controller_policy`, `attach_aws_ebs_csi_policy`, `attach_aws_efs_csi_policy`, `attach_aws_vpc_cni_policy`, or `attach_mountpoint_s3_csi_policy`. Use `policy_statements` or `additional_policy_arns` for custom access. The IAM role name defaults to `${common_name}-${cluster}-${key}`.
+
+      Enable the agent with `cluster_addons.eks-pod-identity-agent = { before_compute = true }`. Also set `vpc-cni = { before_compute = true }` so nodes get CNI before compute.
+
+      `vpc-cni`, `coredns`, `kube-proxy`, `eks-pod-identity-agent`, `metrics-server`, and `kube-state-metrics` do not use `pod_identities` (VPC CNI uses the node IAM role). For `aws-secrets-store-csi-driver-provider`, grant IAM on the workload ServiceAccount, not on the provider add-on.
+
+      `aws-ebs-csi-driver`, `aws-efs-csi-driver`, and `aws-mountpoint-s3-csi-driver` require the association before the add-on becomes Active. Create those add-ons in a second apply after `pod_identities`.
+
+      AWS Load Balancer Controller: tag subnets with `aws_load_balancer_controller`, declare IAM in `pod_identities`, and install the Helm chart with a ServiceAccount that matches `service_account`. Karpenter IAM and its association are set under `karpenter`, not under `pod_identities`.
+    examples:
+      - title: Configuration Code
+        code: |
+          ```hcl
+          eks_parameters = {
+            "my-cluster" = {
+              cluster_addons = {
+                vpc-cni                = { before_compute = true }
+                eks-pod-identity-agent = { before_compute = true }
+                # Second apply: aws-ebs-csi-driver, aws-efs-csi-driver, aws-mountpoint-s3-csi-driver
+              }
+
+              pod_identities = {
+                aws-load-balancer-controller = {
+                  namespace                       = "kube-system"
+                  service_account                 = "aws-load-balancer-controller"
+                  attach_aws_lb_controller_policy = true
+                }
+                aws-ebs-csi-driver = {
+                  namespace                 = "kube-system"
+                  service_account           = "ebs-csi-controller-sa"
+                  attach_aws_ebs_csi_policy = true
+                }
+                example-s3 = {
+                  namespace       = "apps"
+                  service_account = "example"
+                  policy_statements = [{
+                    sid       = "ReadBucket"
+                    actions   = ["s3:GetObject", "s3:ListBucket"]
+                    resources = ["arn:aws:s3:::example-bucket", "arn:aws:s3:::example-bucket/*"]
+                  }]
+                }
+              }
+            }
           }
           ```
   - icon: 📦
@@ -258,11 +503,13 @@ features:
       - title: Configuration Code
         code: |
           ```hcl
-          "my-cluster" = {
-            create = true
-            cluster_compute_config = {
-              enabled    = true
-              node_pools = ["general-purpose"]
+          eks_parameters = {
+            "my-cluster" = {
+              create = true
+              cluster_compute_config = {
+                enabled    = true
+                node_pools = ["general-purpose"]
+              }
             }
           }
           ```
@@ -270,10 +517,12 @@ important_notes: |
   - **⚠️ VPC and subnets:** The module discovers VPC and subnets by default using `vpc_name` and subnet tags. Override with `control_plane_subnet_ids` and `subnet_ids` if needed.
   - **⚠️ Access:** Use `access_entries` or `enable_cluster_creator_admin_permissions = true` to grant cluster access.
   - **⚠️ Karpenter:** This module only creates the AWS prerequisites (IAM, SQS, discovery tags). Install the Karpenter controller (e.g. via Helm) and create NodePool and EC2NodeClass in the cluster yourself.
+  - **⚠️ AWS Load Balancer Controller:** `create` only tags subnets. Put the controller in `pod_identities` if you need IAM. Helm is the caller's responsibility; the ServiceAccount must match. A private API endpoint does not block Pod Identity associations (EKS API, not kube-apiserver).
+  - **⚠️ Pod Identity:** Set `cluster_addons.eks-pod-identity-agent = { before_compute = true }`. Create `aws-ebs-csi-driver`, `aws-efs-csi-driver`, and `aws-mountpoint-s3-csi-driver` in a second apply after associations exist. Karpenter associations are configured with `karpenter`, not `pod_identities`.
 input_table: |
   | create | Whether to create this EKS cluster. | `bool` | `true` | no |
   | cluster_name | EKS cluster name. | `string` | `"${local.common_name}-${each.key}"` | no |
-  | cluster_version | Kubernetes API version (e.g. `"1.33"`). | `string` | `"1.33"` | no |
+  | cluster_version | Kubernetes API version (e.g. `"1.36"`). | `string` | `"1.36"` | no |
   | vpc_name | VPC name (tag `Name`) used to discover VPC. | `string` | `local.default_vpc_name` | no |
   | subnet_ids | Explicit list of subnet IDs for node groups. If empty, subnets are discovered by tag. | `list(string)` | (discovered) | no |
   | control_plane_subnet_ids | Subnet IDs for the control plane. | `list(string)` | `[]` | no |
@@ -299,3 +548,4 @@ input_table: |
   | aws_load_balancer_controller.private_ingress_create | Tag private subnets with `kubernetes.io/role/internal-elb`. | `bool` | — | no |
   | aws_load_balancer_controller.public_subnet_name | Tag filter for public subnets (e.g. `"*-public*"`). | `string` | (from metadata) | no |
   | aws_load_balancer_controller.private_subnet_name | Tag filter for private subnets (e.g. `"*-private*"`). | `string` | (from metadata) | no |
+  | pod_identities | Map of Pod Identity roles. Each entry needs `namespace` and `service_account`; optional `attach_aws_lb_controller_policy`, `attach_aws_ebs_csi_policy`, `policy_statements`. | `map(any)` | `{}` | no |

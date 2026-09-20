@@ -20,8 +20,8 @@ module "karpenter" {
   for_each = var.eks_parameters
 
   # Parámetros generales
-  create       = try(each.value.karpenter.create, false)
-  tags         = try(each.value.karpenter.aws_resources_tags, local.common_tags)
+  create       = try(each.value.karpenter.create, var.eks_defaults.karpenter.create, false)
+  tags         = merge(local.common_tags, try(each.value.karpenter.aws_resources_tags, var.eks_defaults.karpenter.aws_resources_tags, null))
   cluster_name = module.eks[each.key].cluster_name
 
   # Karpenter Controller IAM Role

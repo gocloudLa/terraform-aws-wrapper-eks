@@ -6,6 +6,8 @@ module "wrapper_eks" {
   eks_parameters = {
     ex-node-group = {
       create = true
+      # Default: false (private API). Public so kubectl works without VPN/bastion.
+      cluster_endpoint_public_access = true
       # To use a custom cluster name instead of the one derived from metadata:
       # cluster_name = "ex-node-group"
 
@@ -14,9 +16,23 @@ module "wrapper_eks" {
       # control_plane_subnet_ids = ["subnet-aaa", "subnet-bbb", "subnet-ccc"]
       # subnet_ids               = ["subnet-xxx", "subnet-yyy", "subnet-zzz"]
 
-      # Subnet tagging for AWS Load Balancer Controller (public/private subnets)
+      cluster_addons = {
+        vpc-cni                = { before_compute = true }
+        eks-pod-identity-agent = { before_compute = true }
+        coredns                = {}
+        kube-proxy             = {}
+        metrics-server         = {}
+        kube-state-metrics     = {}
+        # After first apply (Pod Identity exists): aws-ebs-csi-driver, aws-efs-csi-driver, aws-mountpoint-s3-csi-driver
+        aws-ebs-csi-driver = {}
+        # aws-efs-csi-driver                    = {}
+        # aws-mountpoint-s3-csi-driver          = {}
+        # aws-secrets-store-csi-driver-provider = {}
+      }
+
+      # Subnet tagging only. Pod Identity for the controller is declared below.
       aws_load_balancer_controller = {
-        create                 = true
+        create                 = true # Default: false
         public_ingress_create  = true
         private_ingress_create = true
         # Optional: customize subnet names when not using autodiscovery
@@ -25,6 +41,40 @@ module "wrapper_eks" {
         # Optional: customize discovery tags
         # aws_load_balancer_controller_vpc_public_subnet_tags  = { "kubernetes.io/role/elb" = 1 }
         # aws_load_balancer_controller_vpc_private_subnet_tags = { "kubernetes.io/role/internal-elb" = 1 }
+      }
+
+      pod_identities = {
+        aws-load-balancer-controller = {
+          namespace                       = "kube-system"
+          service_account                 = "aws-load-balancer-controller"
+          attach_aws_lb_controller_policy = true
+        }
+        aws-ebs-csi-driver = {
+          namespace                 = "kube-system"
+          service_account           = "ebs-csi-controller-sa"
+          attach_aws_ebs_csi_policy = true
+        }
+        # aws-efs-csi-driver = {
+        #   namespace                 = "kube-system"
+        #   service_account           = "efs-csi-controller-sa"
+        #   attach_aws_efs_csi_policy = true
+        # }
+        # aws-mountpoint-s3-csi-driver = {
+        #   namespace                         = "kube-system"
+        #   service_account                   = "s3-csi-driver-sa"
+        #   attach_mountpoint_s3_csi_policy   = true
+        #   mountpoint_s3_csi_bucket_arns     = ["arn:aws:s3:::example-bucket"]
+        #   mountpoint_s3_csi_bucket_path_arns = ["arn:aws:s3:::example-bucket/*"]
+        # }
+        example-s3 = {
+          namespace       = "apps"
+          service_account = "example"
+          policy_statements = [{
+            sid       = "ReadBucket"
+            actions   = ["s3:GetObject", "s3:ListBucket"]
+            resources = ["arn:aws:s3:::example-bucket", "arn:aws:s3:::example-bucket/*"]
+          }]
+        }
       }
       managed_node_groups = {
         default = {
@@ -45,7 +95,7 @@ module "wrapper_eks" {
 
       # Enable AWS resources required by Karpenter (IAM, SQS, etc.)
       karpenter = {
-        create = true
+        create = true # Default: false
         # If you set the subnet tag value, you can reference it in the node class so the provisioner
         # places nodes in those subnets (as set when creating the cluster with subnet_id)
         # vpc_subnet_tag_value = "custom-tag"

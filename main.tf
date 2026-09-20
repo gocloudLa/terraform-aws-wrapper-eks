@@ -16,7 +16,7 @@ module "eks" {
   /* Cluster                                                              */
   /*----------------------------------------------------------------------*/
   name               = try(each.value.cluster_name, var.eks_defaults.cluster_name, "${local.common_name}-${each.key}")
-  kubernetes_version = try(each.value.cluster_version, var.eks_defaults.cluster_version, "1.33")
+  kubernetes_version = try(each.value.cluster_version, var.eks_defaults.cluster_version, "1.36")
   enabled_log_types  = try(each.value.cluster_enabled_log_types, var.eks_defaults.cluster_enabled_log_types, ["api", "audit", "authenticator", "controllerManager", "scheduler"])
   # The cluster will source authenticated IAM principals only from EKS access entry APIs.
   authentication_mode = try(each.value.authentication_mode, var.eks_defaults.authentication_mode, "API_AND_CONFIG_MAP")
