@@ -287,6 +287,201 @@ eks_parameters = {
 
 </details>
 
+<details><summary>How to install AWS Load Balancer Controller (Gateway API)</summary>
+
+# AWS Load Balancer Controller: Gateway API on an EKS cluster
+
+Subnet tags and Pod Identity come from this wrapper. Install CRDs, Helm, then Gateway and HTTPRoutes. Adjust names, region, VPC, ACM ARN, and hostnames.
+
+Helm: https://docs.aws.amazon.com/eks/latest/userguide/lbc-helm.html
+Gateway CRDs: https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/gateway/gateway/
+
+## 1) Base variables
+
+```bash
+export CLUSTER_NAME="dmc-prd-my-cluster"
+export REGION="us-east-1"
+export VPC_ID="vpc-xxxxxxxx"
+export ACM_CERT_ARN="arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+export LBC_CHART_VERSION="3.5.0"
+```
+
+## 2) Connect to the cluster
+
+```bash
+aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION"
+```
+
+## 3) Gateway API CRDs and LBC Gateway CRDs
+
+```bash
+kubectl apply --server-side=true -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v3.5.0/config/crd/gateway/gateway-crds.yaml
+```
+
+## 4) Install the Helm chart (Pod Identity already created by IaC)
+
+Use ServiceAccount name `aws-load-balancer-controller` in `kube-system` (same as `pod_identities`). Do not set `eks.amazonaws.com/role-arn`. `defaultTargetType: ip` is required for ClusterIP Services with VPC CNI.
+
+```bash
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  --namespace kube-system \
+  --version "${LBC_CHART_VERSION}" \
+  --set clusterName="${CLUSTER_NAME}" \
+  --set region="${REGION}" \
+  --set vpcId="${VPC_ID}" \
+  --set defaultTargetType=ip \
+  --set serviceAccount.create=true \
+  --set serviceAccount.name=aws-load-balancer-controller
+kubectl -n kube-system rollout status deploy/aws-load-balancer-controller
+```
+
+## 5) Public Gateway (one ALB)
+
+ACM certificate must be in the same region as the cluster. LBC reads the cert from `LoadBalancerConfiguration`, not from `certificateRefs`.
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: aws-alb
+spec:
+  controllerName: gateway.k8s.aws/alb
+---
+apiVersion: gateway.k8s.aws/v1
+kind: LoadBalancerConfiguration
+metadata:
+  name: public-alb
+  namespace: default
+spec:
+  scheme: internet-facing
+  listenerConfigurations:
+    - protocolPort: HTTPS:443
+      defaultCertificate: ${ACM_CERT_ARN}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: public-alb
+  namespace: default
+spec:
+  gatewayClassName: aws-alb
+  infrastructure:
+    parametersRef:
+      group: gateway.k8s.aws
+      kind: LoadBalancerConfiguration
+      name: public-alb
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      protocol: HTTPS
+      port: 443
+      allowedRoutes:
+        namespaces:
+          from: All
+EOF
+kubectl get gateway public-alb -n default
+```
+
+Wait until `ADDRESS` is an `*.elb.amazonaws.com` hostname and Gateway `Accepted=True`.
+
+## 6) Sample app (HTTPRoute rules on the same ALB)
+
+```bash
+cat <<'EOF' | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hello
+  template:
+    metadata:
+      labels:
+        app: hello
+    spec:
+      containers:
+        - name: hello
+          image: public.ecr.aws/nginx/nginx:stable
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello
+  namespace: default
+spec:
+  selector:
+    app: hello
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-to-https
+  namespace: default
+spec:
+  parentRefs:
+    - name: public-alb
+      sectionName: http
+  hostnames:
+    - hello.example.com
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hello
+  namespace: default
+spec:
+  parentRefs:
+    - name: public-alb
+      sectionName: https
+  hostnames:
+    - hello.example.com
+  rules:
+    - backendRefs:
+        - name: hello
+          port: 80
+EOF
+```
+
+Further apps: Deployment + Service + HTTPRoute with `parentRefs.name: public-alb`.
+
+## 7) Test without DNS
+
+```bash
+HOST=hello.example.com
+ALB=$(kubectl -n default get gateway public-alb -o jsonpath='{.status.addresses[0].value}')
+IP=$(dig +short "$ALB" | head -n1)
+curl -v --resolve "${HOST}:443:${IP}" "https://${HOST}/"
+```
+
+The ACM certificate must include `HOST` (or a matching wildcard). `--resolve` sends SNI and Host without creating a DNS record.
+
+
+</details>
+
 
 ### EKS Pod Identity
 Declare entries in `pod_identities` (default `{}`). Each key creates one IAM role and one EKS Pod Identity association (`namespace` + `service_account`). The ServiceAccount does not need to exist yet. Associations use the EKS API, so a private cluster endpoint does not block them. This wrapper does not install Helm charts or talk to the Kubernetes API.
