@@ -532,7 +532,10 @@ input_table: |
   | cluster_enabled_log_types | Control plane log types: `api`, `audit`, `authenticator`, `controllerManager`, `scheduler`. | `list(string)` | `["api", "audit", "authenticator", "controllerManager", "scheduler"]` | no |
   | create_cloudwatch_log_group | Create a CloudWatch log group for control plane logs. | `bool` | `true` | no |
   | cloudwatch_log_group_retention_in_days | Retention in days for the control plane log group. | `number` | `30` | no |
-  | cluster_addons | Map of addon name → config (e.g. `coredns = {}`, `vpc-cni = { before_compute = true }`). | `map(any)` | coredns, kube-proxy, vpc-cni, eks-pod-identity-agent | no |
+  | cluster_addons | Map of addon name → config (`before_compute`, `namespace_config`, `pod_identity_association`, etc.). | `map(any)` | coredns, kube-proxy, vpc-cni, eks-pod-identity-agent | no |
+  | control_plane_egress_mode | Control plane egress: `AWS_MANAGED` or `CUSTOMER_ROUTED`. | `string` | (AWS default) | no |
+  | control_plane_scaling_config | Provisioned Control Plane: `{ tier = "standard" \| "tier-xl" \| "tier-2xl" \| "tier-4xl" \| "tier-8xl" }`. | `object` | `null` | no |
+  | kube_scheduler_config | Control plane kube-scheduler (`node_resources_fit.scoring_strategy`). | `object` | `null` | no |
   | enable_cluster_creator_admin_permissions | Grant cluster creator IAM principal full admin via EKS access entries. | `bool` | `true` | no |
   | access_entries | Map of access entry key → `principal_arn`, `policy_associations`, etc. for explicit cluster access. | `map(any)` | `{}` | no |
   | managed_node_groups | Map of node group name → config (`ami_type`, `instance_types`, `capacity_type`, `min_size`, `desired_size`, `max_size`, etc.). | `map(any)` | `{}` | no |
@@ -542,6 +545,7 @@ input_table: |
   | karpenter.create | Enable creation of Karpenter AWS resources (controller IAM role, node IAM role, SQS, subnet/SG tags). | `bool` | `false` | no |
   | karpenter.vpc_subnet_tag_value | Custom value for subnet tag `karpenter.sh/discovery`; use in EC2NodeClass `subnetSelectorTerms`. | `string` | (cluster name) | no |
   | karpenter.security_group_node_tag_value | Custom value for node security group tag `karpenter.sh/discovery`; use in EC2NodeClass `securityGroupSelectorTerms`. | `string` | (cluster name) | no |
+  | karpenter.node_iam_role_source_account_condition | Restrict Karpenter node IAM trust to the cluster account (`aws:SourceAccount`). | `bool` | `false` | no |
   | aws_load_balancer_controller | Config for subnet tagging so the AWS LB controller can create NLBs/ALBs. | `object` | `{}` | no |
   | aws_load_balancer_controller.create | Enable tagging of subnets for the AWS Load Balancer Controller. | `bool` | `false` | no |
   | aws_load_balancer_controller.public_ingress_create | Tag public subnets with `kubernetes.io/role/elb`. | `bool` | — | no |
