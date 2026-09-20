@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/gocloudLa/terraform-aws-wrapper-eks/compare/v1.0.1...v1.1.0) (2026-09-20)
+
+
+### Features
+
+* **eks:** improve addons & add pod identity ([#9](https://github.com/gocloudLa/terraform-aws-wrapper-eks/issues/9)) ([9e2621a](https://github.com/gocloudLa/terraform-aws-wrapper-eks/commit/9e2621a8d7d946e28843ae37571a45d9b41efff4))
+* **module:** update version v21.25.1 ([#11](https://github.com/gocloudLa/terraform-aws-wrapper-eks/issues/11)) ([0baa127](https://github.com/gocloudLa/terraform-aws-wrapper-eks/commit/0baa1279b154167db2e0b1e290df4ef220a0b555))
+
 ## [1.0.1](https://github.com/gocloudLa/terraform-aws-wrapper-eks/compare/v1.0.0...v1.0.1) (2026-02-26)
 
 
