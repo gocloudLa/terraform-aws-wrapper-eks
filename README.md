@@ -16,6 +16,8 @@ The Terraform wrapper for EKS simplifies the configuration of Amazon Elastic Kub
 
 - 🌐 [AWS Load Balancer Controller subnet tagging](#aws-load-balancer-controller-subnet-tagging) - Automatic tagging of subnets for public and private ingress
 
+- 🪪 [EKS Pod Identity](#eks-pod-identity) - IAM roles and cluster associations for AWS Load Balancer Controller, EBS CSI, and custom service accounts
+
 - 📦 [EKS Auto Mode](#eks-auto-mode) - Use EKS managed node pools without managing node groups
 
 
@@ -25,28 +27,23 @@ The Terraform wrapper for EKS simplifies the configuration of Amazon Elastic Kub
 |------|------:|
 | <a href="https://github.com/terraform-aws-modules/terraform-aws-eks" target="_blank">terraform-aws-modules/eks/aws</a> | 21.9.0 |
 | <a href="https://github.com/terraform-aws-modules/terraform-aws-kms" target="_blank">terraform-aws-modules/kms/aws</a> | 4.0.0 |
+| <a href="https://github.com/terraform-aws-modules/terraform-aws-eks-pod-identity" target="_blank">terraform-aws-modules/eks-pod-identity/aws</a> | 2.8.0 |
 
 
 
 ## 🚀 Quick Start
 ```hcl
-module "wrapper_eks" {
-  source = "gocloudLa/wrapper-eks/aws"
-
-  metadata = local.metadata
-
-  eks_parameters = {
-    "my-cluster" = {
-      create = true
-      managed_node_groups = {
-        default = {
-          ami_type       = "AL2023_x86_64_STANDARD"
-          instance_types = ["t3.medium"]
-          capacity_type  = "ON_DEMAND"
-          min_size       = 1
-          desired_size   = 2
-          max_size       = 3
-        }
+eks_parameters = {
+  "my-cluster" = {
+    create = true
+    managed_node_groups = {
+      default = {
+        ami_type       = "AL2023_x86_64_STANDARD"
+        instance_types = ["t3.medium"]
+        capacity_type  = "ON_DEMAND"
+        min_size       = 1
+        desired_size   = 2
+        max_size       = 3
       }
     }
   }
@@ -87,18 +84,20 @@ Enable `karpenter.create = true` to create the controller IAM role, node IAM rol
 <details><summary>Configuration Code</summary>
 
 ```hcl
-"my-cluster" = {
-  create = true
-  karpenter = {
+eks_parameters = {
+  "my-cluster" = {
     create = true
-    # Optional: custom tag values for NodeClass subnet/SG selectors
-    # vpc_subnet_tag_value        = "my-value"
-    # security_group_node_tag_value = "my-value"
-  }
-  managed_node_groups = {
-    karpenter-controller = {
-      labels = { "karpenter.sh/controller" = "true" }
-      # ...
+    karpenter = {
+      create = true
+      # Optional: custom tag values for NodeClass subnet/SG selectors
+      # vpc_subnet_tag_value        = "my-value"
+      # security_group_node_tag_value = "my-value"
+    }
+    managed_node_groups = {
+      karpenter-controller = {
+        labels = { "karpenter.sh/controller" = "true" }
+        # ...
+      }
     }
   }
 }
@@ -261,21 +260,75 @@ kubectl get nodes -w
 
 
 ### AWS Load Balancer Controller subnet tagging
-Set `aws_load_balancer_controller.create = true` and choose `public_ingress_create` and/or `private_ingress_create`. The wrapper discovers the relevant subnets (by default using the same naming convention as the cluster) and applies `kubernetes.io/role/elb` and `kubernetes.io/role/internal-elb` so the AWS Load Balancer Controller can create NLBs/ALBs in the right subnets. Optional custom subnet names and tags are supported.
+Set `aws_load_balancer_controller.create = true` and choose `public_ingress_create` and/or `private_ingress_create`. The wrapper discovers the relevant subnets (by default using the same naming convention as the cluster) and applies `kubernetes.io/role/elb` and `kubernetes.io/role/internal-elb` so the AWS Load Balancer Controller can create NLBs/ALBs in the right subnets. Optional custom subnet names and tags are supported. `create` only tags subnets; it does not create IAM roles or Pod Identity associations.
+
+- https://docs.aws.amazon.com/eks/latest/userguide/lbc-helm.html
+- https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/gateway/gateway/
 
 
 <details><summary>Configuration Code</summary>
 
 ```hcl
-aws_load_balancer_controller = {
-  create                  = true
-  public_ingress_create   = true
-  private_ingress_create  = true
-  # Optional: custom subnet name pattern or tags
-  # public_subnet_name  = "*-public*"
-  # private_subnet_name = "*-private*"
-  # aws_load_balancer_controller_vpc_public_subnet_tags  = { "kubernetes.io/role/elb" = 1 }
-  # aws_load_balancer_controller_vpc_private_subnet_tags = { "kubernetes.io/role/internal-elb" = 1 }
+eks_parameters = {
+  "my-cluster" = {
+    aws_load_balancer_controller = {
+      create                  = true
+      public_ingress_create   = true
+      private_ingress_create  = true
+      # Optional: custom subnet name pattern or tags
+      # public_subnet_name  = "*-public*"
+      # private_subnet_name = "*-private*"
+      # aws_load_balancer_controller_vpc_public_subnet_tags  = { "kubernetes.io/role/elb" = 1 }
+      # aws_load_balancer_controller_vpc_private_subnet_tags = { "kubernetes.io/role/internal-elb" = 1 }
+    }
+  }
+}
+```
+
+
+</details>
+
+
+### EKS Pod Identity
+Declare entries in `pod_identities` (default `{}`). Each key is one IAM role plus an EKS Pod Identity association. This wrapper does not install Helm or call the Kubernetes API. The ServiceAccount does not need to exist yet; a private cluster endpoint does not block associations.
+
+Use `attach_aws_lb_controller_policy` / `attach_aws_ebs_csi_policy` / `attach_aws_efs_csi_policy` / `attach_aws_vpc_cni_policy` / `attach_mountpoint_s3_csi_policy` for those AWS policies, or `policy_statements` for a custom policy. Role name defaults to `${common_name}-${cluster}-${key}`. Include `eks-pod-identity-agent` in `cluster_addons`. Helm for the AWS Load Balancer Controller is the caller's job; the chart ServiceAccount must match. Karpenter is unchanged.
+
+EKS add-on names: `vpc-cni`, `coredns`, `kube-proxy`, `eks-pod-identity-agent`, `aws-ebs-csi-driver`, `aws-efs-csi-driver`, `aws-mountpoint-s3-csi-driver`, `metrics-server`, `kube-state-metrics`, `aws-secrets-store-csi-driver-provider`. VPC CNI, CoreDNS, kube-proxy, the Pod Identity Agent, Metrics Server, and kube-state-metrics do not need Pod Identity (VPC CNI uses the node IAM role). Secrets Store CSI mounts secrets as the **workload** SA (`policy_statements` / `additional_policy_arns`), not the provider add-on.
+
+
+<details><summary>Configuration Code</summary>
+
+```hcl
+eks_parameters = {
+  "my-cluster" = {
+    cluster_addons = {
+      eks-pod-identity-agent = { before_compute = true }
+      aws-ebs-csi-driver     = {}
+    }
+
+    pod_identities = {
+      aws-load-balancer-controller = {
+        namespace                       = "kube-system"
+        service_account                 = "aws-load-balancer-controller"
+        attach_aws_lb_controller_policy = true
+      }
+      aws-ebs-csi-driver = {
+        namespace                 = "kube-system"
+        service_account           = "ebs-csi-controller-sa"
+        attach_aws_ebs_csi_policy = true
+      }
+      example-s3 = {
+        namespace       = "apps"
+        service_account = "example"
+        policy_statements = [{
+          sid       = "ReadBucket"
+          actions   = ["s3:GetObject", "s3:ListBucket"]
+          resources = ["arn:aws:s3:::example-bucket", "arn:aws:s3:::example-bucket/*"]
+        }]
+      }
+    }
+  }
 }
 ```
 
@@ -290,11 +343,13 @@ Set `cluster_compute_config.enabled = true` and specify `node_pools` (e.g. `["ge
 <details><summary>Configuration Code</summary>
 
 ```hcl
-"my-cluster" = {
-  create = true
-  cluster_compute_config = {
-    enabled    = true
-    node_pools = ["general-purpose"]
+eks_parameters = {
+  "my-cluster" = {
+    create = true
+    cluster_compute_config = {
+      enabled    = true
+      node_pools = ["general-purpose"]
+    }
   }
 }
 ```
@@ -310,7 +365,7 @@ Set `cluster_compute_config.enabled = true` and specify `node_pools` (e.g. `["ge
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------- | --------------------------------------------------------------------- | -------- |
 | create                                              | Whether to create this EKS cluster.                                                                                            | `bool`         | `true`                                                                | no       |
 | cluster_name                                        | EKS cluster name.                                                                                                              | `string`       | `"${local.common_name}-${each.key}"`                                  | no       |
-| cluster_version                                     | Kubernetes API version (e.g. `"1.33"`).                                                                                        | `string`       | `"1.33"`                                                              | no       |
+| cluster_version                                     | Kubernetes API version (e.g. `"1.36"`).                                                                                        | `string`       | `"1.36"`                                                              | no       |
 | vpc_name                                            | VPC name (tag `Name`) used to discover VPC.                                                                                    | `string`       | `local.default_vpc_name`                                              | no       |
 | subnet_ids                                          | Explicit list of subnet IDs for node groups. If empty, subnets are discovered by tag.                                          | `list(string)` | (discovered)                                                          | no       |
 | control_plane_subnet_ids                            | Subnet IDs for the control plane.                                                                                              | `list(string)` | `[]`                                                                  | no       |
@@ -336,6 +391,7 @@ Set `cluster_compute_config.enabled = true` and specify `node_pools` (e.g. `["ge
 | aws_load_balancer_controller.private_ingress_create | Tag private subnets with `kubernetes.io/role/internal-elb`.                                                                    | `bool`         | —                                                                     | no       |
 | aws_load_balancer_controller.public_subnet_name     | Tag filter for public subnets (e.g. `"*-public*"`).                                                                            | `string`       | (from metadata)                                                       | no       |
 | aws_load_balancer_controller.private_subnet_name    | Tag filter for private subnets (e.g. `"*-private*"`).                                                                          | `string`       | (from metadata)                                                       | no       |
+| pod_identities                                      | Map of Pod Identity roles (`namespace`, `service_account`, optional attach_* policies or `policy_statements`).                 | `map(any)`     | `{}`                                                                  | no       |
 
 
 
@@ -347,6 +403,8 @@ Set `cluster_compute_config.enabled = true` and specify `node_pools` (e.g. `["ge
 - **⚠️ VPC and subnets:** The module discovers VPC and subnets by default using `vpc_name` and subnet tags. Override with `control_plane_subnet_ids` and `subnet_ids` if needed.
 - **⚠️ Access:** Use `access_entries` or `enable_cluster_creator_admin_permissions = true` to grant cluster access.
 - **⚠️ Karpenter:** This module only creates the AWS prerequisites (IAM, SQS, discovery tags). Install the Karpenter controller (e.g. via Helm) and create NodePool and EC2NodeClass in the cluster yourself.
+- **⚠️ AWS Load Balancer Controller:** `create` only tags subnets. Put the controller in `pod_identities` if you need IAM. Helm is the caller's responsibility; the ServiceAccount must match. A private API endpoint does not block Pod Identity associations (EKS API, not kube-apiserver).
+- **⚠️ Pod Identity:** Include `eks-pod-identity-agent` in `cluster_addons` when using `pod_identities`. Karpenter keeps its own association and is not listed here.
 
 
 

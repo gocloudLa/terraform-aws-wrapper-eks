@@ -11,13 +11,13 @@
 /*----------------------------------------------------------------------*/
 
 variable "eks_defaults" {
-  description = "Map of default values which will be used for each eks cluster."
   type        = any
+  description = "Default values merged into each entry of eks_parameters."
   default     = {}
 }
 
 variable "eks_parameters" {
-  description = "Maps of eks clusters to create a wrapper from. Values are passed through to the module."
   type        = any
+  description = "Map of EKS clusters to create."
   default     = {}
 }

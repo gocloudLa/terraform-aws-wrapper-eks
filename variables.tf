@@ -12,12 +12,12 @@ variable "metadata" {
 
 variable "eks_parameters" {
   type        = any
-  description = "EKS parameteres"
+  description = "Map of EKS clusters to create."
   default     = {}
 }
 
 variable "eks_defaults" {
   type        = any
-  description = "EKS default parameteres"
+  description = "Default values merged into each entry of eks_parameters."
   default     = {}
 }

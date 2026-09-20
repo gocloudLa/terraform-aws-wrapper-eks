@@ -31,3 +31,23 @@ output "cluster_security_group_ids" {
   description = "Cluster security group IDs for each cluster"
   value       = { for k, v in module.eks : k => v.cluster_security_group_id }
 }
+
+output "pod_identity_role_arns" {
+  description = "IAM role ARNs created for EKS Pod Identity, keyed by cluster then identity"
+  value = {
+    for cluster, _ in var.eks_parameters : cluster => {
+      for k, v in local.pod_identities : v.key => module.pod_identity[k].iam_role_arn
+      if v.cluster == cluster
+    }
+  }
+}
+
+output "pod_identity_associations" {
+  description = "Pod Identity association ARNs, keyed by cluster then identity"
+  value = {
+    for cluster, _ in var.eks_parameters : cluster => {
+      for k, v in local.pod_identities : v.key => try(module.pod_identity[k].associations["this"].association_arn, null)
+      if v.cluster == cluster
+    }
+  }
+}
