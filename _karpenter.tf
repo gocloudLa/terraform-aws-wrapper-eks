@@ -15,7 +15,7 @@ locals {
 
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
-  version = "21.9.0"
+  version = "21.25.1"
 
   for_each = var.eks_parameters
 
@@ -56,18 +56,19 @@ module "karpenter" {
   queue_kms_data_key_reuse_period_seconds = try(each.value.karpenter.aws_resources_queue_kms_data_key_reuse_period_seconds, null)
 
   # Node IAM Role
-  create_node_iam_role               = try(each.value.karpenter.aws_resources_create_node_iam_role, true)
-  cluster_ip_family                  = try(each.value.karpenter.aws_resources_cluster_ip_family, "ipv4")
-  node_iam_role_arn                  = try(each.value.karpenter.aws_resources_node_iam_role_arn, null)
-  node_iam_role_name                 = try(each.value.karpenter.aws_resources_node_iam_role_name, module.eks[each.key].cluster_name)
-  node_iam_role_use_name_prefix      = try(each.value.karpenter.aws_resources_node_iam_role_use_name_prefix, false)
-  node_iam_role_path                 = try(each.value.karpenter.aws_resources_node_iam_role_path, "/")
-  node_iam_role_description          = try(each.value.karpenter.aws_resources_node_iam_role_description, null)
-  node_iam_role_max_session_duration = try(each.value.karpenter.aws_resources_node_iam_role_max_session_duration, null)
-  node_iam_role_permissions_boundary = try(each.value.karpenter.aws_resources_node_iam_role_permissions_boundary, null)
-  node_iam_role_attach_cni_policy    = try(each.value.karpenter.aws_resources_node_iam_role_attach_cni_policy, true)
-  node_iam_role_additional_policies  = try(each.value.karpenter.aws_resources_node_iam_role_additional_policies, local.node_iam_role_additional_policies)
-  node_iam_role_tags                 = try(each.value.karpenter.aws_resources_node_iam_role_tags, {})
+  create_node_iam_role                   = try(each.value.karpenter.aws_resources_create_node_iam_role, true)
+  cluster_ip_family                      = try(each.value.karpenter.aws_resources_cluster_ip_family, "ipv4")
+  node_iam_role_arn                      = try(each.value.karpenter.aws_resources_node_iam_role_arn, null)
+  node_iam_role_name                     = try(each.value.karpenter.aws_resources_node_iam_role_name, module.eks[each.key].cluster_name)
+  node_iam_role_use_name_prefix          = try(each.value.karpenter.aws_resources_node_iam_role_use_name_prefix, false)
+  node_iam_role_path                     = try(each.value.karpenter.aws_resources_node_iam_role_path, "/")
+  node_iam_role_description              = try(each.value.karpenter.aws_resources_node_iam_role_description, null)
+  node_iam_role_max_session_duration     = try(each.value.karpenter.aws_resources_node_iam_role_max_session_duration, null)
+  node_iam_role_permissions_boundary     = try(each.value.karpenter.aws_resources_node_iam_role_permissions_boundary, null)
+  node_iam_role_attach_cni_policy        = try(each.value.karpenter.aws_resources_node_iam_role_attach_cni_policy, true)
+  node_iam_role_additional_policies      = try(each.value.karpenter.aws_resources_node_iam_role_additional_policies, local.node_iam_role_additional_policies)
+  node_iam_role_source_account_condition = try(each.value.karpenter.node_iam_role_source_account_condition, var.eks_defaults.karpenter.node_iam_role_source_account_condition, false)
+  node_iam_role_tags                     = try(each.value.karpenter.aws_resources_node_iam_role_tags, {})
 
   # Access Entry
   create_access_entry = try(each.value.karpenter.aws_resources_create_access_entry, true)

@@ -1,6 +1,6 @@
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "v21.9.0"
+  version = "21.25.1"
 
   for_each = var.eks_parameters
 
@@ -22,12 +22,15 @@ module "eks" {
   authentication_mode = try(each.value.authentication_mode, var.eks_defaults.authentication_mode, "API_AND_CONFIG_MAP")
 
   compute_config                     = try(each.value.cluster_compute_config, var.eks_defaults.cluster_compute_config, {})
+  control_plane_scaling_config       = try(each.value.control_plane_scaling_config, var.eks_defaults.control_plane_scaling_config, null)
   upgrade_policy                     = try(each.value.cluster_upgrade_policy, var.eks_defaults.cluster_upgrade_policy, { support_type = "STANDARD" })
   remote_network_config              = try(each.value.cluster_remote_network_config, var.eks_defaults.cluster_remote_network_config, null)
   zonal_shift_config                 = try(each.value.cluster_zonal_shift_config, var.eks_defaults.cluster_zonal_shift_config, { enabled = true })
+  kube_scheduler_config              = try(each.value.kube_scheduler_config, var.eks_defaults.kube_scheduler_config, null)
   additional_security_group_ids      = try(each.value.cluster_additional_security_group_ids, var.eks_defaults.cluster_additional_security_group_ids, [])
   control_plane_subnet_ids           = try(each.value.control_plane_subnet_ids, var.eks_defaults.control_plane_subnet_ids, [])
   subnet_ids                         = length(try(each.value.subnet_ids, var.eks_defaults.subnet_ids, [])) > 0 ? try(each.value.subnet_ids, var.eks_defaults.subnet_ids) : data.aws_subnets.this[each.key].ids
+  control_plane_egress_mode          = try(each.value.control_plane_egress_mode, var.eks_defaults.control_plane_egress_mode, null)
   endpoint_private_access            = try(each.value.cluster_endpoint_private_access, var.eks_defaults.cluster_endpoint_private_access, true)
   endpoint_public_access             = try(each.value.cluster_endpoint_public_access, var.eks_defaults.cluster_endpoint_public_access, false)
   endpoint_public_access_cidrs       = try(each.value.cluster_endpoint_public_access_cidrs, var.eks_defaults.cluster_endpoint_public_access_cidrs, ["0.0.0.0/0"])
