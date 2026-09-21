@@ -1,6 +1,6 @@
 module "lambda_run" {
   source  = "terraform-aws-modules/lambda/aws"
-  version = "8.7.0"
+  version = "8.8.0"
 
   count = local.create ? 1 : 0
 

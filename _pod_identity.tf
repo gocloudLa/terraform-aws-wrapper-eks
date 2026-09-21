@@ -21,7 +21,7 @@ locals {
 # Key: "${cluster}-${identity}"
 module "pod_identity" {
   source  = "terraform-aws-modules/eks-pod-identity/aws"
-  version = "2.8.0"
+  version = "2.9.0"
 
   for_each = local.pod_identities
 
