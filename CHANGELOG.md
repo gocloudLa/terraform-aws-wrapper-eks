@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/gocloudLa/terraform-aws-wrapper-eks/compare/v1.1.0...v1.2.0) (2026-09-21)
+
+
+### Features
+
+* **components:** add manifiest & helm charts deployment support ([#12](https://github.com/gocloudLa/terraform-aws-wrapper-eks/issues/12)) ([2425160](https://github.com/gocloudLa/terraform-aws-wrapper-eks/commit/24251601077d79f12c41e5d6c85528c1bac74731))
+
 ## [1.1.0](https://github.com/gocloudLa/terraform-aws-wrapper-eks/compare/v1.0.1...v1.1.0) (2026-09-20)
 
 
