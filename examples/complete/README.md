@@ -1,22 +1,21 @@
 # Complete Example 🚀
 
-This example demonstrates the configuration of EKS clusters using Terraform, including EKS Auto Mode, managed node groups, Karpenter AWS resources, and optional AWS Load Balancer Controller integration.
+EKS clusters with Auto Mode, managed node groups, Karpenter, Pod Identity, Load Balancer Controller tags, and cluster components.
 
 ## 🔧 What's Included
 
 ### Analysis of Terraform Configuration
 
 #### Main Purpose
-The main purpose is to set up one or more EKS clusters with configurable compute (Auto Mode, node groups, or Karpenter) and common addons.
+Demonstrate the main wrapper knobs in one place.
 
 #### Key Features Demonstrated
-- **EKS Auto Mode**: Optional cluster with managed node pools (general-purpose) and no classic node groups.
-- **Managed Node Groups**: Example node group configuration with AMI type, instance types, and scaling.
-- **Karpenter**: Cluster with Karpenter AWS resources (IAM, SQS, tags) and a controller node group; deploy Karpenter Helm separately.
-- **Defaults and addons**: Cluster version, endpoint access, control plane logging, CoreDNS, kube-proxy, VPC CNI, EKS Pod Identity Agent.
-- **AWS Load Balancer Controller**: Optional public/private subnet tagging for ingress (enabled in the node-group cluster).
-- **EKS Pod Identity**: `pod_identities` for LBC, EBS CSI, and a custom S3 example. Helm for LBC is installed outside this module on `ex-node-group`.
-- **Cluster components**: `ex-components` (`create = false`) covers recipe, kubectl file/inline/url, and helm repo/file. Drop groups to apply a subset.
+- **Managed node groups** and **EKS Auto Mode**.
+- **Karpenter** AWS resources (IAM, SQS, tags); install Helm separately.
+- **Pod Identity** for LBC, EBS CSI, and a custom S3 example.
+- **AWS Load Balancer Controller** subnet tags; install by hand or with `components`.
+- **Cluster components** (`ex-components`): LBC + sample app on `hello.<zone_public>` during apply.
+- **Test ALB without DNS**: `curl --resolve` commands next to `15-sample-app` in `main.tf`.
 
 ## 🚀 Quick Start
 

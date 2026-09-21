@@ -6,19 +6,21 @@ Each module encapsulates best practices, security configurations, and sensible d
 
 ## 📦 Module: Terraform EKS Module
 <p align="right"><a href="https://github.com/gocloudLa/terraform-aws-wrapper-eks/releases/latest"><img src="https://img.shields.io/github/v/release/gocloudLa/terraform-aws-wrapper-eks.svg?style=for-the-badge" alt="Latest Release"/></a><a href=""><img src="https://img.shields.io/github/last-commit/gocloudLa/terraform-aws-wrapper-eks.svg?style=for-the-badge" alt="Last Commit"/></a><a href="https://registry.terraform.io/modules/gocloudLa/wrapper-eks/aws"><img src="https://img.shields.io/badge/Terraform-Registry-7B42BC?style=for-the-badge&logo=terraform&logoColor=white" alt="Terraform Registry"/></a></p>
-The Terraform wrapper for EKS simplifies the configuration of Amazon Elastic Kubernetes Service in the AWS cloud. This wrapper functions as a predefined template, facilitating the creation and management of EKS clusters, node groups, and integrations such as Karpenter by handling all the technical details.
+Terraform wrapper for Amazon EKS. Creates clusters, node groups, and integrations such as Karpenter, Pod Identity, and Load Balancer Controller subnet tags. Can also install cluster software (Helm / kubectl) during apply without a Kubernetes provider.
 
 ### ✨ Features
 
-- 🏷️ [Metadata and VPC/subnet autodiscovery](#metadata-and-vpc/subnet-autodiscovery) - Cluster naming and network discovery from a single metadata structure
+- 🏷️ [Metadata and VPC/subnet autodiscovery](#metadata-and-vpc/subnet-autodiscovery) - Cluster naming and network discovery from metadata
 
-- ⚡ [Karpenter AWS resources](#karpenter-aws-resources) - One-block setup of IAM, SQS, pod identity, and discovery tags for Karpenter
+- ⚡ [Karpenter AWS resources](#karpenter-aws-resources) - IAM, SQS, pod identity, and discovery tags for Karpenter
 
-- 🌐 [AWS Load Balancer Controller subnet tagging](#aws-load-balancer-controller-subnet-tagging) - Automatic tagging of subnets for public and private ingress
+- 🌐 [AWS Load Balancer Controller](#aws-load-balancer-controller) - Subnet tags, then install by hand or with `components`
 
-- 🪪 [EKS Pod Identity](#eks-pod-identity) - IAM roles and EKS associations for service accounts
+- 🧩 [Cluster components](#cluster-components) - Install Helm and kubectl during apply, without a Kubernetes provider
 
-- 📦 [EKS Auto Mode](#eks-auto-mode) - Use EKS managed node pools without managing node groups
+- 🪪 [EKS Pod Identity](#eks-pod-identity) - IAM roles for Kubernetes service accounts
+
+- 📦 [EKS Auto Mode](#eks-auto-mode) - Managed node pools without classic node groups
 
 
 
@@ -28,6 +30,7 @@ The Terraform wrapper for EKS simplifies the configuration of Amazon Elastic Kub
 | <a href="https://github.com/terraform-aws-modules/terraform-aws-eks-pod-identity" target="_blank">terraform-aws-modules/eks-pod-identity/aws</a> | 2.8.0 |
 | <a href="https://github.com/terraform-aws-modules/terraform-aws-eks" target="_blank">terraform-aws-modules/eks/aws</a> | 21.25.1 |
 | <a href="https://github.com/terraform-aws-modules/terraform-aws-kms" target="_blank">terraform-aws-modules/kms/aws</a> | 4.0.0 |
+| <a href="https://github.com/terraform-aws-modules/terraform-aws-lambda" target="_blank">terraform-aws-modules/lambda/aws</a> | 8.7.0 |
 
 
 
@@ -54,17 +57,15 @@ eks_parameters = {
 ## 🔧 Additional Features Usage
 
 ### Metadata and VPC/subnet autodiscovery
-The wrapper derives cluster names from `metadata` (e.g. `local.common_name` + cluster key) and discovers VPC and subnets by convention: VPC by tag `Name = <common_name_prefix>` and subnets by tag `Name = <common_name_prefix>-private*` or `-public*`. Override with `vpc_name`, `control_plane_subnet_ids`, or `subnet_ids` when you need custom network layout.
+Cluster names come from `metadata` (`common_name` + cluster key). VPC and subnets are discovered by tag (`Name = <common_name_prefix>` and `<common_name_prefix>-private*` / `-public*`). Override with `vpc_name`, `control_plane_subnet_ids`, or `subnet_ids`.
 
 
 <details><summary>Configuration Code</summary>
 
 ```hcl
-# Cluster name becomes e.g. dmc-prd-my-cluster from metadata + key
 eks_parameters = {
   "my-cluster" = {
     create = true
-    # Optional: override autodiscovery
     # vpc_name                 = "my-vpc"
     # control_plane_subnet_ids = ["subnet-aaa", "subnet-bbb"]
     # subnet_ids               = ["subnet-xxx", "subnet-yyy"]
@@ -78,7 +79,7 @@ eks_parameters = {
 
 
 ### Karpenter AWS resources
-Enable `karpenter.create = true` to create the controller IAM role, node IAM role (and instance profile), SQS queue for spot termination, pod identity association, and EKS access entry. The wrapper also applies subnet and security group discovery tags (`karpenter.sh/discovery`) so you can reference them in EC2NodeClass. Install the Karpenter Helm chart and define Provisioner/NodePool separately.
+Set `karpenter.create = true` to create controller/node IAM, SQS, pod identity, access entry, and `karpenter.sh/discovery` tags on subnets and the node security group. Install the Helm chart and NodePool / EC2NodeClass yourself.
 
 
 <details><summary>Configuration Code</summary>
@@ -89,8 +90,7 @@ eks_parameters = {
     create = true
     karpenter = {
       create = true
-      # Optional: custom tag values for NodeClass subnet/SG selectors
-      # vpc_subnet_tag_value        = "my-value"
+      # vpc_subnet_tag_value          = "my-value"
       # security_group_node_tag_value = "my-value"
     }
     managed_node_groups = {
@@ -258,8 +258,8 @@ kubectl get nodes -w
 </details>
 
 
-### AWS Load Balancer Controller subnet tagging
-Set `aws_load_balancer_controller.create = true` and choose `public_ingress_create` and/or `private_ingress_create`. The wrapper discovers the relevant subnets (by default using the same naming convention as the cluster) and applies `kubernetes.io/role/elb` and `kubernetes.io/role/internal-elb` so the AWS Load Balancer Controller can create NLBs/ALBs in the right subnets. Optional custom subnet names and tags are supported. `create` only tags subnets; it does not create IAM roles or Pod Identity associations.
+### AWS Load Balancer Controller
+`aws_load_balancer_controller.create = true` tags public/private subnets (`kubernetes.io/role/elb` / `internal-elb`). IAM goes in `pod_identities` (`kube-system` / `aws-load-balancer-controller`). Install CRDs, Helm, and Gateway either by hand or with `components`.
 
 - https://docs.aws.amazon.com/eks/latest/userguide/lbc-helm.html
 - https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/gateway/gateway/
@@ -271,14 +271,19 @@ Set `aws_load_balancer_controller.create = true` and choose `public_ingress_crea
 eks_parameters = {
   "my-cluster" = {
     aws_load_balancer_controller = {
-      create                  = true
-      public_ingress_create   = true
-      private_ingress_create  = true
+      create                 = true
+      public_ingress_create  = true
+      private_ingress_create = true
       # Optional: custom subnet name pattern or tags
       # public_subnet_name  = "*-public*"
       # private_subnet_name = "*-private*"
-      # aws_load_balancer_controller_vpc_public_subnet_tags  = { "kubernetes.io/role/elb" = 1 }
-      # aws_load_balancer_controller_vpc_private_subnet_tags = { "kubernetes.io/role/internal-elb" = 1 }
+    }
+    pod_identities = {
+      aws-load-balancer-controller = {
+        namespace                       = "kube-system"
+        service_account                 = "aws-load-balancer-controller"
+        attach_aws_lb_controller_policy = true
+      }
     }
   }
 }
@@ -291,7 +296,7 @@ eks_parameters = {
 
 # AWS Load Balancer Controller: Gateway API on an EKS cluster
 
-Subnet tags and Pod Identity come from this wrapper. Install CRDs, Helm, then Gateway and HTTPRoutes. Adjust names, region, VPC, ACM ARN, and hostnames.
+Manual install from a workstation. Subnet tags and Pod Identity come from this wrapper. Install CRDs, Helm, then Gateway and HTTPRoutes. To install during terraform apply instead, use components (next example). Adjust names, region, VPC, ACM ARN, and hostnames.
 
 Helm: https://docs.aws.amazon.com/eks/latest/userguide/lbc-helm.html
 Gateway CRDs: https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/gateway/gateway/
@@ -482,19 +487,173 @@ The ACM certificate must include `HOST` (or a matching wildcard). `--resolve` se
 
 </details>
 
+<details><summary>Install with components</summary>
+
+```hcl
+eks_parameters = {
+  "my-cluster" = {
+    aws_load_balancer_controller = {
+      create                 = true
+      public_ingress_create  = true
+      private_ingress_create = true
+    }
+    pod_identities = {
+      aws-load-balancer-controller = {
+        namespace                       = "kube-system"
+        service_account                 = "aws-load-balancer-controller"
+        attach_aws_lb_controller_policy = true
+      }
+    }
+    components = {
+      "10-lbc" = {
+        "00" = {
+          kind   = "kubectl"
+          source = "url"
+          url    = "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml"
+          flags  = ["--server-side=true"]
+        }
+        "01" = {
+          kind   = "kubectl"
+          source = "url"
+          url    = "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v3.5.0/config/crd/gateway/gateway-crds.yaml"
+        }
+        "02" = {
+          kind             = "helm"
+          source           = "repo"
+          repository       = "https://aws.github.io/eks-charts"
+          chart            = "aws-load-balancer-controller"
+          version          = "3.5.0"
+          release          = "aws-load-balancer-controller"
+          namespace        = "kube-system"
+          create_namespace = false
+          flags            = ["--wait", "--timeout", "10m"]
+          values           = <<-YAML
+            clusterName: my-cluster
+            region: us-east-1
+            vpcId: vpc-xxxxxxxx
+            defaultTargetType: ip
+            serviceAccount:
+              create: true
+              name: aws-load-balancer-controller
+          YAML
+        }
+        "03" = {
+          kind   = "kubectl"
+          source = "inline"
+          yaml   = <<-YAML
+            apiVersion: gateway.networking.k8s.io/v1
+            kind: GatewayClass
+            metadata:
+              name: aws-alb
+            spec:
+              controllerName: gateway.k8s.aws/alb
+            ---
+            apiVersion: gateway.k8s.aws/v1
+            kind: LoadBalancerConfiguration
+            metadata:
+              name: public-alb
+              namespace: default
+            spec:
+              scheme: internet-facing
+              listenerConfigurations:
+                - protocolPort: HTTPS:443
+                  defaultCertificate: arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+            ---
+            apiVersion: gateway.networking.k8s.io/v1
+            kind: Gateway
+            metadata:
+              name: public-alb
+              namespace: default
+            spec:
+              gatewayClassName: aws-alb
+              infrastructure:
+                parametersRef:
+                  group: gateway.k8s.aws
+                  kind: LoadBalancerConfiguration
+                  name: public-alb
+              listeners:
+                - name: http
+                  protocol: HTTP
+                  port: 80
+                  allowedRoutes:
+                    namespaces:
+                      from: All
+                - name: https
+                  protocol: HTTPS
+                  port: 443
+                  allowedRoutes:
+                    namespaces:
+                      from: All
+          YAML
+        }
+      }
+    }
+  }
+}
+```
+
+
+</details>
+
+
+### Cluster components
+`components` is a map of groups → steps (lexicographic order by key). Terraform uses only the AWS provider: Image Builder bakes `kube-apply`, the pack goes to S3, and a Fargate task applies it. The Lambda waiter has a 15 minute limit. Apply-only (no uninstall on destroy). Plan does not show Kubernetes diffs.
+
+- `kubectl` — `url`, `file`, or `inline`
+- `helm` — `repo` or `file`; optional `values` / `values_file`, `version`, `release`, `namespace`, `create_namespace`
+- `kustomize` — `file` or `url`
+
+Needs schedulable nodes and NAT or VPC endpoints. Debug with output `components` (`task_arn`, `log_group_name`) and CloudWatch.
+
+
+<details><summary>Configuration Code</summary>
+
+```hcl
+eks_parameters = {
+  "my-cluster" = {
+    components = {
+      "20-file" = {
+        "00" = {
+          kind   = "kubectl"
+          source = "file"
+          path   = "${path.module}/components/k8s/gateway.yaml"
+        }
+      }
+      "50-namespaces" = {
+        "00" = {
+          kind   = "kubectl"
+          source = "inline"
+          yaml   = <<-YAML
+            apiVersion: v1
+            kind: Namespace
+            metadata:
+              name: app-a
+          YAML
+        }
+      }
+      "55-helm-file" = {
+        "00" = {
+          kind             = "helm"
+          source           = "file"
+          path             = "${path.module}/components/demo"
+          release          = "demo"
+          namespace        = "demo"
+          create_namespace = true
+        }
+      }
+    }
+  }
+}
+```
+
+
+</details>
+
 
 ### EKS Pod Identity
-Declare entries in `pod_identities` (default `{}`). Each key creates one IAM role and one EKS Pod Identity association (`namespace` + `service_account`). The ServiceAccount does not need to exist yet. Associations use the EKS API, so a private cluster endpoint does not block them. This wrapper does not install Helm charts or talk to the Kubernetes API.
+Each key in `pod_identities` creates an IAM role and an EKS association for a `namespace` + `service_account`. Pods using that ServiceAccount can call AWS APIs. Enable the agent with `cluster_addons.eks-pod-identity-agent = { before_compute = true }`.
 
-Attach managed policies with `attach_aws_lb_controller_policy`, `attach_aws_ebs_csi_policy`, `attach_aws_efs_csi_policy`, `attach_aws_vpc_cni_policy`, or `attach_mountpoint_s3_csi_policy`. Use `policy_statements` or `additional_policy_arns` for custom access. The IAM role name defaults to `${common_name}-${cluster}-${key}`.
-
-Enable the agent with `cluster_addons.eks-pod-identity-agent = { before_compute = true }`. Also set `vpc-cni = { before_compute = true }` so nodes get CNI before compute.
-
-`vpc-cni`, `coredns`, `kube-proxy`, `eks-pod-identity-agent`, `metrics-server`, and `kube-state-metrics` do not use `pod_identities` (VPC CNI uses the node IAM role). For `aws-secrets-store-csi-driver-provider`, grant IAM on the workload ServiceAccount, not on the provider add-on.
-
-`aws-ebs-csi-driver`, `aws-efs-csi-driver`, and `aws-mountpoint-s3-csi-driver` require the association before the add-on becomes Active. Create those add-ons in a second apply after `pod_identities`.
-
-AWS Load Balancer Controller: tag subnets with `aws_load_balancer_controller`, declare IAM in `pod_identities`, and install the Helm chart with a ServiceAccount that matches `service_account`. Karpenter IAM and its association are set under `karpenter`, not under `pod_identities`.
+Use managed flags for common controllers (`attach_aws_lb_controller_policy`, `attach_aws_ebs_csi_policy`, `attach_aws_efs_csi_policy`, `attach_mountpoint_s3_csi_policy`) or `policy_statements` / `additional_policy_arns` for any other workload (S3, SQS, Secrets Manager, and so on).
 
 
 <details><summary>Configuration Code</summary>
@@ -503,9 +662,7 @@ AWS Load Balancer Controller: tag subnets with `aws_load_balancer_controller`, d
 eks_parameters = {
   "my-cluster" = {
     cluster_addons = {
-      vpc-cni                = { before_compute = true }
       eks-pod-identity-agent = { before_compute = true }
-      # Second apply: aws-ebs-csi-driver, aws-efs-csi-driver, aws-mountpoint-s3-csi-driver
     }
 
     pod_identities = {
@@ -519,6 +676,7 @@ eks_parameters = {
         service_account           = "ebs-csi-controller-sa"
         attach_aws_ebs_csi_policy = true
       }
+      # Any other app
       example-s3 = {
         namespace       = "apps"
         service_account = "example"
@@ -538,7 +696,7 @@ eks_parameters = {
 
 
 ### EKS Auto Mode
-Set `cluster_compute_config.enabled = true` and specify `node_pools` (e.g. `["general-purpose"]`). The control plane manages capacity; no managed node groups or Karpenter are required for basic workloads.
+Set `cluster_compute_config.enabled = true` and `node_pools` (e.g. `["general-purpose"]`).
 
 
 <details><summary>Configuration Code</summary>
@@ -562,40 +720,55 @@ eks_parameters = {
 
 
 ## 📑 Inputs
-| Name                                                | Description                                                                                                                                                                  | Type           | Default                                                               | Required |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | --------------------------------------------------------------------- | -------- |
-| create                                              | Whether to create this EKS cluster.                                                                                                                                          | `bool`         | `true`                                                                | no       |
-| cluster_name                                        | EKS cluster name.                                                                                                                                                            | `string`       | `"${local.common_name}-${each.key}"`                                  | no       |
-| cluster_version                                     | Kubernetes API version (e.g. `"1.36"`).                                                                                                                                      | `string`       | `"1.36"`                                                              | no       |
-| vpc_name                                            | VPC name (tag `Name`) used to discover VPC.                                                                                                                                  | `string`       | `local.default_vpc_name`                                              | no       |
-| subnet_ids                                          | Explicit list of subnet IDs for node groups. If empty, subnets are discovered by tag.                                                                                        | `list(string)` | (discovered)                                                          | no       |
-| control_plane_subnet_ids                            | Subnet IDs for the control plane.                                                                                                                                            | `list(string)` | `[]`                                                                  | no       |
-| cluster_endpoint_public_access                      | Enable public API endpoint.                                                                                                                                                  | `bool`         | `false`                                                               | no       |
-| cluster_endpoint_private_access                     | Enable private API endpoint.                                                                                                                                                 | `bool`         | `true`                                                                | no       |
-| cluster_endpoint_public_access_cidrs                | CIDRs allowed to reach the public endpoint.                                                                                                                                  | `list(string)` | `["0.0.0.0/0"]`                                                       | no       |
-| cluster_enabled_log_types                           | Control plane log types: `api`, `audit`, `authenticator`, `controllerManager`, `scheduler`.                                                                                  | `list(string)` | `["api", "audit", "authenticator", "controllerManager", "scheduler"]` | no       |
-| create_cloudwatch_log_group                         | Create a CloudWatch log group for control plane logs.                                                                                                                        | `bool`         | `true`                                                                | no       |
-| cloudwatch_log_group_retention_in_days              | Retention in days for the control plane log group.                                                                                                                           | `number`       | `30`                                                                  | no       |
-| cluster_addons                                      | Map of addon name → config (`before_compute`, `namespace_config`, `pod_identity_association`, etc.).                                                                         | `map(any)`     | coredns, kube-proxy, vpc-cni, eks-pod-identity-agent                  | no       |
-| control_plane_egress_mode                           | Control plane egress: `AWS_MANAGED` or `CUSTOMER_ROUTED`.                                                                                                                    | `string`       | (AWS default)                                                         | no       |
-| kube_scheduler_config                               | Control plane kube-scheduler (`node_resources_fit.scoring_strategy`).                                                                                                        | `object`       | `null`                                                                | no       |
-| enable_cluster_creator_admin_permissions            | Grant cluster creator IAM principal full admin via EKS access entries.                                                                                                       | `bool`         | `true`                                                                | no       |
-| access_entries                                      | Map of access entry key → `principal_arn`, `policy_associations`, etc. for explicit cluster access.                                                                          | `map(any)`     | `{}`                                                                  | no       |
-| managed_node_groups                                 | Map of node group name → config (`ami_type`, `instance_types`, `capacity_type`, `min_size`, `desired_size`, `max_size`, etc.).                                               | `map(any)`     | `{}`                                                                  | no       |
-| cluster_compute_config                              | EKS Auto Mode: set `enabled = true` and `node_pools = ["general-purpose"]` to use managed node pools only.                                                                   | `object`       | `{}`                                                                  | no       |
-| tags                                                | Tags applied to cluster and related resources.                                                                                                                               | `map(string)`  | `local.common_tags`                                                   | no       |
-| karpenter                                           | Config for Karpenter AWS resources. Set `create = true` to create IAM roles, SQS queue, pod identity, and discovery tags.                                                    | `object`       | `{}`                                                                  | no       |
-| karpenter.create                                    | Enable creation of Karpenter AWS resources (controller IAM role, node IAM role, SQS, subnet/SG tags).                                                                        | `bool`         | `false`                                                               | no       |
-| karpenter.vpc_subnet_tag_value                      | Custom value for subnet tag `karpenter.sh/discovery`; use in EC2NodeClass `subnetSelectorTerms`.                                                                             | `string`       | (cluster name)                                                        | no       |
-| karpenter.security_group_node_tag_value             | Custom value for node security group tag `karpenter.sh/discovery`; use in EC2NodeClass `securityGroupSelectorTerms`.                                                         | `string`       | (cluster name)                                                        | no       |
-| karpenter.node_iam_role_source_account_condition    | Restrict Karpenter node IAM trust to the cluster account (`aws:SourceAccount`).                                                                                              | `bool`         | `false`                                                               | no       |
-| aws_load_balancer_controller                        | Config for subnet tagging so the AWS LB controller can create NLBs/ALBs.                                                                                                     | `object`       | `{}`                                                                  | no       |
-| aws_load_balancer_controller.create                 | Enable tagging of subnets for the AWS Load Balancer Controller.                                                                                                              | `bool`         | `false`                                                               | no       |
-| aws_load_balancer_controller.public_ingress_create  | Tag public subnets with `kubernetes.io/role/elb`.                                                                                                                            | `bool`         | —                                                                     | no       |
-| aws_load_balancer_controller.private_ingress_create | Tag private subnets with `kubernetes.io/role/internal-elb`.                                                                                                                  | `bool`         | —                                                                     | no       |
-| aws_load_balancer_controller.public_subnet_name     | Tag filter for public subnets (e.g. `"*-public*"`).                                                                                                                          | `string`       | (from metadata)                                                       | no       |
-| aws_load_balancer_controller.private_subnet_name    | Tag filter for private subnets (e.g. `"*-private*"`).                                                                                                                        | `string`       | (from metadata)                                                       | no       |
-| pod_identities                                      | Map of Pod Identity roles. Each entry needs `namespace` and `service_account`; optional `attach_aws_lb_controller_policy`, `attach_aws_ebs_csi_policy`, `policy_statements`. | `map(any)`     | `{}`                                                                  | no       |
+| Name                                                | Description                                                                                                                                                                                                    | Type           | Default                                                               | Required |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | --------------------------------------------------------------------- | -------- |
+| create                                              | Whether to create this EKS cluster.                                                                                                                                                                            | `bool`         | `true`                                                                | no       |
+| cluster_name                                        | EKS cluster name.                                                                                                                                                                                              | `string`       | `"${local.common_name}-${each.key}"`                                  | no       |
+| cluster_version                                     | Kubernetes API version (e.g. `"1.36"`).                                                                                                                                                                        | `string`       | `"1.36"`                                                              | no       |
+| vpc_name                                            | VPC name (tag `Name`) used to discover VPC.                                                                                                                                                                    | `string`       | `local.default_vpc_name`                                              | no       |
+| subnet_ids                                          | Explicit list of subnet IDs for node groups. If empty, subnets are discovered by tag.                                                                                                                          | `list(string)` | (discovered)                                                          | no       |
+| control_plane_subnet_ids                            | Subnet IDs for the control plane.                                                                                                                                                                              | `list(string)` | `[]`                                                                  | no       |
+| cluster_endpoint_public_access                      | Enable public API endpoint.                                                                                                                                                                                    | `bool`         | `false`                                                               | no       |
+| cluster_endpoint_private_access                     | Enable private API endpoint.                                                                                                                                                                                   | `bool`         | `true`                                                                | no       |
+| cluster_endpoint_public_access_cidrs                | CIDRs allowed to reach the public endpoint.                                                                                                                                                                    | `list(string)` | `["0.0.0.0/0"]`                                                       | no       |
+| cluster_enabled_log_types                           | Control plane log types: `api`, `audit`, `authenticator`, `controllerManager`, `scheduler`.                                                                                                                    | `list(string)` | `["api", "audit", "authenticator", "controllerManager", "scheduler"]` | no       |
+| create_cloudwatch_log_group                         | Create a CloudWatch log group for control plane logs.                                                                                                                                                          | `bool`         | `true`                                                                | no       |
+| cloudwatch_log_group_retention_in_days              | Retention in days for the control plane log group.                                                                                                                                                             | `number`       | `30`                                                                  | no       |
+| cluster_addons                                      | Map of addon name → config (`before_compute`, `namespace_config`, `pod_identity_association`, etc.).                                                                                                           | `map(any)`     | coredns, kube-proxy, vpc-cni, eks-pod-identity-agent                  | no       |
+| control_plane_egress_mode                           | Control plane egress: `AWS_MANAGED` or `CUSTOMER_ROUTED`.                                                                                                                                                      | `string`       | (AWS default)                                                         | no       |
+| kube_scheduler_config                               | Control plane kube-scheduler (`node_resources_fit.scoring_strategy`).                                                                                                                                          | `object`       | `null`                                                                | no       |
+| enable_cluster_creator_admin_permissions            | Grant cluster creator IAM principal full admin via EKS access entries.                                                                                                                                         | `bool`         | `true`                                                                | no       |
+| access_entries                                      | Map of access entry key → `principal_arn`, `policy_associations`, etc. for explicit cluster access.                                                                                                            | `map(any)`     | `{}`                                                                  | no       |
+| managed_node_groups                                 | Map of node group name → config (`ami_type`, `instance_types`, `capacity_type`, `min_size`, `desired_size`, `max_size`, etc.).                                                                                 | `map(any)`     | `{}`                                                                  | no       |
+| cluster_compute_config                              | EKS Auto Mode: set `enabled = true` and `node_pools = ["general-purpose"]` to use managed node pools only.                                                                                                     | `object`       | `{}`                                                                  | no       |
+| tags                                                | Tags applied to cluster and related resources.                                                                                                                                                                 | `map(string)`  | `local.common_tags`                                                   | no       |
+| karpenter                                           | Config for Karpenter AWS resources. Set `create = true` to create IAM roles, SQS queue, pod identity, and discovery tags.                                                                                      | `object`       | `{}`                                                                  | no       |
+| karpenter.create                                    | Enable creation of Karpenter AWS resources (controller IAM role, node IAM role, SQS, subnet/SG tags).                                                                                                          | `bool`         | `false`                                                               | no       |
+| karpenter.vpc_subnet_tag_value                      | Custom value for subnet tag `karpenter.sh/discovery`; use in EC2NodeClass `subnetSelectorTerms`.                                                                                                               | `string`       | (cluster name)                                                        | no       |
+| karpenter.security_group_node_tag_value             | Custom value for node security group tag `karpenter.sh/discovery`; use in EC2NodeClass `securityGroupSelectorTerms`.                                                                                           | `string`       | (cluster name)                                                        | no       |
+| karpenter.node_iam_role_source_account_condition    | Restrict Karpenter node IAM trust to the cluster account (`aws:SourceAccount`).                                                                                                                                | `bool`         | `false`                                                               | no       |
+| aws_load_balancer_controller                        | Config for subnet tagging so the AWS LB controller can create NLBs/ALBs.                                                                                                                                       | `object`       | `{}`                                                                  | no       |
+| aws_load_balancer_controller.create                 | Enable tagging of subnets for the AWS Load Balancer Controller.                                                                                                                                                | `bool`         | `false`                                                               | no       |
+| aws_load_balancer_controller.public_ingress_create  | Tag public subnets with `kubernetes.io/role/elb`.                                                                                                                                                              | `bool`         | —                                                                     | no       |
+| aws_load_balancer_controller.private_ingress_create | Tag private subnets with `kubernetes.io/role/internal-elb`.                                                                                                                                                    | `bool`         | —                                                                     | no       |
+| aws_load_balancer_controller.public_subnet_name     | Tag filter for public subnets (e.g. `"*-public*"`).                                                                                                                                                            | `string`       | (from metadata)                                                       | no       |
+| aws_load_balancer_controller.private_subnet_name    | Tag filter for private subnets (e.g. `"*-private*"`).                                                                                                                                                          | `string`       | (from metadata)                                                       | no       |
+| pod_identities                                      | Map of IAM roles for ServiceAccounts. Each entry needs `namespace` and `service_account`; use `attach_aws_*_policy` for known controllers or `policy_statements` / `additional_policy_arns` for any other app. | `map(any)`     | `{}`                                                                  | no       |
+| components                                          | Map of group → step to install cluster software (Helm / kubectl). Order is lexicographic by group key, then step key.                                                                                          | `map(any)`     | `{}`                                                                  | no       |
+| components.<group>.<step>.kind                      | Step kind: `kubectl`, `helm`, or `kustomize`.                                                                                                                                                                  | `string`       | —                                                                     | yes      |
+| components.<group>.<step>.source                    | `url` / `file` / `inline` (kubectl), `repo` / `file` (helm), `file` / `url` (kustomize).                                                                                                                       | `string`       | —                                                                     | no       |
+| components.<group>.<step>.url                       | Remote manifest (`kubectl` / `kustomize` with `source = url`).                                                                                                                                                 | `string`       | `null`                                                                | no       |
+| components.<group>.<step>.path                      | Local file or directory packed into S3 (`source = file`).                                                                                                                                                      | `string`       | `null`                                                                | no       |
+| components.<group>.<step>.yaml                      | Inline Kubernetes YAML (`kubectl` with `source = inline`).                                                                                                                                                     | `string`       | `null`                                                                | no       |
+| components.<group>.<step>.repository                | Helm repo URL or `oci://…` (`helm` with `source = repo`).                                                                                                                                                      | `string`       | `null`                                                                | no       |
+| components.<group>.<step>.chart                     | Helm chart name.                                                                                                                                                                                               | `string`       | `null`                                                                | no       |
+| components.<group>.<step>.version                   | Helm chart version.                                                                                                                                                                                            | `string`       | `null`                                                                | no       |
+| components.<group>.<step>.release                   | Helm release name.                                                                                                                                                                                             | `string`       | `null`                                                                | no       |
+| components.<group>.<step>.namespace                 | Helm release namespace.                                                                                                                                                                                        | `string`       | `null`                                                                | no       |
+| components.<group>.<step>.create_namespace          | Pass `--create-namespace` to Helm.                                                                                                                                                                             | `bool`         | `false`                                                               | no       |
+| components.<group>.<step>.values                    | Inline Helm values YAML (packed as `values.yaml`).                                                                                                                                                             | `string`       | `null`                                                                | no       |
+| components.<group>.<step>.values_file               | Path to a local Helm values file.                                                                                                                                                                              | `string`       | `null`                                                                | no       |
+| components.<group>.<step>.flags                     | Extra argv for kubectl/helm (e.g. `--server-side`, `--wait`).                                                                                                                                                  | `list(string)` | `[]`                                                                  | no       |
 
 
 
@@ -604,11 +777,11 @@ eks_parameters = {
 
 
 ## ⚠️ Important Notes
-- **⚠️ VPC and subnets:** The module discovers VPC and subnets by default using `vpc_name` and subnet tags. Override with `control_plane_subnet_ids` and `subnet_ids` if needed.
 - **⚠️ Access:** Use `access_entries` or `enable_cluster_creator_admin_permissions = true` to grant cluster access.
-- **⚠️ Karpenter:** This module only creates the AWS prerequisites (IAM, SQS, discovery tags). Install the Karpenter controller (e.g. via Helm) and create NodePool and EC2NodeClass in the cluster yourself.
-- **⚠️ AWS Load Balancer Controller:** `create` only tags subnets. Put the controller in `pod_identities` if you need IAM. Helm is the caller's responsibility; the ServiceAccount must match. A private API endpoint does not block Pod Identity associations (EKS API, not kube-apiserver).
-- **⚠️ Pod Identity:** Set `cluster_addons.eks-pod-identity-agent = { before_compute = true }`. Create `aws-ebs-csi-driver`, `aws-efs-csi-driver`, and `aws-mountpoint-s3-csi-driver` in a second apply after associations exist. Karpenter associations are configured with `karpenter`, not `pod_identities`.
+- **⚠️ Karpenter:** This module creates AWS prerequisites only. Install the Helm chart and NodePool / EC2NodeClass yourself.
+- **⚠️ AWS Load Balancer Controller:** `create` only tags subnets. Put IAM in `pod_identities`, then install CRDs + Helm by hand or with `components`.
+- **⚠️ Cluster components:** Needs NAT/endpoints and schedulable nodes. Lambda waiter max 15 minutes (Helm `--wait` must fit). Apply-only; no Kubernetes diffs in plan. Do not put secrets in the pack.
+- **⚠️ Pod Identity:** Set `cluster_addons.eks-pod-identity-agent = { before_compute = true }`. CSI add-ons that need an association become Active after it exists.
 
 
 
