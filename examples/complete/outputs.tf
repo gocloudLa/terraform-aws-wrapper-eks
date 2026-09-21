@@ -17,3 +17,8 @@ output "pod_identity_associations" {
   description = "EKS Pod Identity associations created by the wrapper"
   value       = module.wrapper_eks.pod_identity_associations
 }
+
+output "components" {
+  description = "EKS components apply results keyed by cluster"
+  value       = module.wrapper_eks.components
+}

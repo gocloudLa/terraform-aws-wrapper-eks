@@ -1,5 +1,5 @@
 module_name: Terraform EKS Module
-module_description: The Terraform wrapper for EKS simplifies the configuration of Amazon Elastic Kubernetes Service in the AWS cloud. This wrapper functions as a predefined template, facilitating the creation and management of EKS clusters, node groups, and integrations such as Karpenter by handling all the technical details.
+module_description: The Terraform wrapper for EKS simplifies the configuration of Amazon Elastic Kubernetes Service in the AWS cloud. This wrapper functions as a predefined template, facilitating the creation and management of EKS clusters, node groups, and integrations such as Karpenter by handling all the technical details. It can also install cluster software (Helm / kubectl) during apply without a Kubernetes provider.
 module_badges:
   - url: "https://github.com/gocloudLa/terraform-aws-wrapper-eks/releases/latest"
     image: "https://img.shields.io/github/v/release/gocloudLa/terraform-aws-wrapper-eks.svg?style=for-the-badge"
@@ -225,10 +225,17 @@ features:
           kubectl get nodes -w
           ```
   - icon: 🌐
-    title: AWS Load Balancer Controller subnet tagging
-    short_description: Automatic tagging of subnets for public and private ingress
+    title: AWS Load Balancer Controller
+    short_description: Subnet tags, then install by hand or with `components`
     long_description: |
-      Set `aws_load_balancer_controller.create = true` and choose `public_ingress_create` and/or `private_ingress_create`. The wrapper discovers the relevant subnets (by default using the same naming convention as the cluster) and applies `kubernetes.io/role/elb` and `kubernetes.io/role/internal-elb` so the AWS Load Balancer Controller can create NLBs/ALBs in the right subnets. Optional custom subnet names and tags are supported. `create` only tags subnets; it does not create IAM roles or Pod Identity associations.
+      Set `aws_load_balancer_controller.create = true` and choose `public_ingress_create` and/or `private_ingress_create`. The wrapper discovers the relevant subnets (by default using the same naming convention as the cluster) and applies `kubernetes.io/role/elb` and `kubernetes.io/role/internal-elb` so the AWS Load Balancer Controller can create NLBs/ALBs in the right subnets. Optional custom subnet names and tags are supported. `create` only tags subnets; it does not create IAM, Pod Identity, or the controller itself.
+
+      Declare IAM under `pod_identities` with ServiceAccount `kube-system/aws-load-balancer-controller` (do not set `eks.amazonaws.com/role-arn` on the chart). Then install Gateway API CRDs, the Helm chart, and Gateway objects in one of two ways:
+
+      - By hand from a workstation, with kubectl and Helm, following the guide below.
+      - During `terraform apply`, with `components` (`kubectl` + `helm` steps). Same CRDs, chart, and Gateway; see the example below and Cluster components.
+
+      The public Gateway / `LoadBalancerConfiguration` (ACM, hosts) always stay on a later `kubectl` step, not inside the Helm chart.
 
       - https://docs.aws.amazon.com/eks/latest/userguide/lbc-helm.html
       - https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/gateway/gateway/
@@ -255,7 +262,7 @@ features:
         code: |
           # AWS Load Balancer Controller: Gateway API on an EKS cluster
 
-          Subnet tags and Pod Identity come from this wrapper. Install CRDs, Helm, then Gateway and HTTPRoutes. Adjust names, region, VPC, ACM ARN, and hostnames.
+          Manual install from a workstation. Subnet tags and Pod Identity come from this wrapper. Install CRDs, Helm, then Gateway and HTTPRoutes. To install during terraform apply instead, use components (next example). Adjust names, region, VPC, ACM ARN, and hostnames.
 
           Helm: https://docs.aws.amazon.com/eks/latest/userguide/lbc-helm.html
           Gateway CRDs: https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/gateway/gateway/
@@ -279,7 +286,7 @@ features:
           ## 3) Gateway API CRDs and LBC Gateway CRDs
 
           ```bash
-          kubectl apply --server-side=true -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml
+          kubectl apply --server-side=true -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/standard-install.yaml
           kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v3.5.0/config/crd/gateway/gateway-crds.yaml
           ```
 
@@ -443,6 +450,207 @@ features:
 
           The ACM certificate must include `HOST` (or a matching wildcard). `--resolve` sends SNI and Host without creating a DNS record.
 
+      - title: Install with components
+        code: |
+          ```hcl
+          # Same CRDs + Helm + Gateway as the manual guide, applied during terraform apply.
+          eks_parameters = {
+            "my-cluster" = {
+              aws_load_balancer_controller = {
+                create                 = true
+                public_ingress_create  = true
+                private_ingress_create = true
+              }
+              pod_identities = {
+                aws-load-balancer-controller = {
+                  namespace                       = "kube-system"
+                  service_account                 = "aws-load-balancer-controller"
+                  attach_aws_lb_controller_policy = true
+                }
+              }
+              components = {
+                "10-lbc" = {
+                  "00" = {
+                    kind   = "kubectl"
+                    source = "url"
+                    url    = "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml"
+                    flags  = ["--server-side=true"]
+                  }
+                  "01" = {
+                    kind   = "kubectl"
+                    source = "url"
+                    url    = "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v3.5.0/config/crd/gateway/gateway-crds.yaml"
+                  }
+                  "02" = {
+                    kind             = "helm"
+                    source           = "repo"
+                    repository       = "https://aws.github.io/eks-charts"
+                    chart            = "aws-load-balancer-controller"
+                    version          = "3.5.0"
+                    release          = "aws-load-balancer-controller"
+                    namespace        = "kube-system"
+                    create_namespace = false
+                    # Waiter is Lambda (max 15m). Helm --wait must finish inside that window.
+                    flags            = ["--wait", "--timeout", "10m"]
+                    values           = <<-YAML
+                      clusterName: my-cluster   # must match the real EKS cluster name
+                      region: us-east-1
+                      vpcId: vpc-xxxxxxxx
+                      defaultTargetType: ip
+                      serviceAccount:
+                        create: true
+                        name: aws-load-balancer-controller
+                    YAML
+                  }
+                  "03" = {
+                    kind   = "kubectl"
+                    source = "inline"
+                    yaml   = <<-YAML
+                      apiVersion: gateway.networking.k8s.io/v1
+                      kind: GatewayClass
+                      metadata:
+                        name: aws-alb
+                      spec:
+                        controllerName: gateway.k8s.aws/alb
+                      ---
+                      apiVersion: gateway.k8s.aws/v1
+                      kind: LoadBalancerConfiguration
+                      metadata:
+                        name: public-alb
+                        namespace: default
+                      spec:
+                        scheme: internet-facing
+                        listenerConfigurations:
+                          - protocolPort: HTTPS:443
+                            defaultCertificate: arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                      ---
+                      apiVersion: gateway.networking.k8s.io/v1
+                      kind: Gateway
+                      metadata:
+                        name: public-alb
+                        namespace: default
+                      spec:
+                        gatewayClassName: aws-alb
+                        infrastructure:
+                          parametersRef:
+                            group: gateway.k8s.aws
+                            kind: LoadBalancerConfiguration
+                            name: public-alb
+                        listeners:
+                          - name: http
+                            protocol: HTTP
+                            port: 80
+                            allowedRoutes:
+                              namespaces:
+                                from: All
+                          - name: https
+                            protocol: HTTPS
+                            port: 443
+                            allowedRoutes:
+                              namespaces:
+                                from: All
+                    YAML
+                  }
+                }
+              }
+            }
+          }
+          ```
+
+  - icon: 🧩
+    title: Cluster components
+    short_description: Install Helm and kubectl during apply, without a Kubernetes provider
+    long_description: |
+      Declare `components` on a cluster: a map of **groups** → **steps**. Order is lexicographic by group key, then step key (prefix IDs such as `10-lbc` / `00`; HCL map order is ignored). Drop a group to skip it. Terraform uses only the AWS provider — the apply runner does not need kubectl, Helm, or AWS CLI.
+
+      On apply, Image Builder bakes a `kube-apply` image. Terraform uploads a pack to S3 (`current/run.json` plus any local files). A Fargate task in private subnets snapshots that pack to `runs/{apply_id}/`, updates kubeconfig, and walks steps in order (stops on the first error). A Lambda waiter starts the task and waits for the container exit code (Lambda max 15 minutes). `terraform plan` does not show Kubernetes diffs. Apply-only: nothing is uninstalled on destroy.
+
+      `kind` / `source`:
+
+      - `kubectl` — `url` (remote manifest), `file` (path packed from the invocador), or `inline` (`yaml`)
+      - `helm` — `repo` (`repository` + `chart`; `repository` may be `oci://…`) or `file` (local chart directory); optional `values` or `values_file`, `version`, `release`, `namespace`, `create_namespace`
+      - `kustomize` — `file` or `url` is also supported (`kubectl apply -k`)
+
+      IAM and subnet tags stay on `pod_identities` and `aws_load_balancer_controller`. Helm `clusterName` must match the real cluster name (`${common_name}-${key}` unless you set `cluster_name`). Nodes must be schedulable before Helm pods run. Private subnets need NAT or VPC endpoints (EKS API, S3, ECR, Helm/GitHub). The task role is granted cluster-admin via an EKS access entry. Do not put secrets in `values` or inline YAML.
+
+      Debug with wrapper output `components` (`summary`, `task_arn`, `log_group_name`), CloudWatch logs, and the pack snapshot under `s3://…/runs/{apply_id}/`.
+    examples:
+      - title: Configuration Code
+        code: |
+          ```hcl
+          eks_parameters = {
+            "my-cluster" = {
+              components = {
+                "10-lbc" = {
+                  "00" = {
+                    kind   = "kubectl"
+                    source = "url"
+                    url    = "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml"
+                    flags  = ["--server-side=true"]
+                  }
+                  "01" = {
+                    kind             = "helm"
+                    source           = "repo"
+                    repository       = "https://aws.github.io/eks-charts"
+                    chart            = "aws-load-balancer-controller"
+                    version          = "3.5.0"
+                    release          = "aws-load-balancer-controller"
+                    namespace        = "kube-system"
+                    create_namespace = false
+                    flags            = ["--wait", "--timeout", "10m"]
+                    values           = <<-YAML
+                      clusterName: my-cluster
+                      defaultTargetType: ip
+                      serviceAccount:
+                        create: true
+                        name: aws-load-balancer-controller
+                    YAML
+                  }
+                }
+              }
+            }
+          }
+          ```
+      - title: kubectl file, inline, and Helm from a local chart
+        code: |
+          ```hcl
+          eks_parameters = {
+            "my-cluster" = {
+              components = {
+                "20-file" = {
+                  "00" = {
+                    kind   = "kubectl"
+                    source = "file"
+                    path   = "${path.module}/components/k8s/gateway.yaml"
+                  }
+                }
+                "50-namespaces" = {
+                  "00" = {
+                    kind   = "kubectl"
+                    source = "inline"
+                    yaml   = <<-YAML
+                      apiVersion: v1
+                      kind: Namespace
+                      metadata:
+                        name: app-a
+                    YAML
+                  }
+                }
+                "55-helm-file" = {
+                  "00" = {
+                    kind             = "helm"
+                    source           = "file"
+                    path             = "${path.module}/components/demo"
+                    release          = "demo"
+                    namespace        = "demo"
+                    create_namespace = true
+                  }
+                }
+              }
+            }
+          }
+          ```
+
   - icon: 🪪
     title: EKS Pod Identity
     short_description: IAM roles and EKS associations for service accounts
@@ -457,7 +665,7 @@ features:
 
       `aws-ebs-csi-driver`, `aws-efs-csi-driver`, and `aws-mountpoint-s3-csi-driver` require the association before the add-on becomes Active. Create those add-ons in a second apply after `pod_identities`.
 
-      AWS Load Balancer Controller: tag subnets with `aws_load_balancer_controller`, declare IAM in `pod_identities`, and install the Helm chart with a ServiceAccount that matches `service_account`. Karpenter IAM and its association are set under `karpenter`, not under `pod_identities`.
+      AWS Load Balancer Controller: tag subnets with `aws_load_balancer_controller`, declare IAM in `pod_identities`, and install the Helm chart (by hand or with `components`) with a ServiceAccount that matches `service_account`. Karpenter IAM and its association are set under `karpenter`, not under `pod_identities`.
     examples:
       - title: Configuration Code
         code: |
@@ -517,7 +725,8 @@ important_notes: |
   - **⚠️ VPC and subnets:** The module discovers VPC and subnets by default using `vpc_name` and subnet tags. Override with `control_plane_subnet_ids` and `subnet_ids` if needed.
   - **⚠️ Access:** Use `access_entries` or `enable_cluster_creator_admin_permissions = true` to grant cluster access.
   - **⚠️ Karpenter:** This module only creates the AWS prerequisites (IAM, SQS, discovery tags). Install the Karpenter controller (e.g. via Helm) and create NodePool and EC2NodeClass in the cluster yourself.
-  - **⚠️ AWS Load Balancer Controller:** `create` only tags subnets. Put the controller in `pod_identities` if you need IAM. Helm is the caller's responsibility; the ServiceAccount must match. A private API endpoint does not block Pod Identity associations (EKS API, not kube-apiserver).
+  - **⚠️ AWS Load Balancer Controller:** `create` only tags subnets. Put IAM in `pod_identities` (ServiceAccount `kube-system/aws-load-balancer-controller`). Install CRDs and the Helm chart either by hand (guide under this feature) or with `components` (`kubectl` + `helm`). Gateway / LoadBalancerConfiguration stay on a later `kubectl` step. A private API endpoint does not block Pod Identity associations (EKS API, not kube-apiserver).
+  - **⚠️ Cluster components:** The apply runner needs only the AWS provider (no kubectl, Helm, or AWS CLI). Fargate runs in private subnets and needs NAT or endpoints (EKS API, S3, ECR, Helm/GitHub) plus schedulable nodes. Image Builder runs on first apply. The waiter is a Lambda (15 minute max); Helm `--wait` must finish inside that window. Plan does not show Kubernetes diffs. No uninstall on destroy. Do not put secrets in `values` or inline YAML. Debug with output `components` (`task_arn`, `log_group_name`) and CloudWatch.
   - **⚠️ Pod Identity:** Set `cluster_addons.eks-pod-identity-agent = { before_compute = true }`. Create `aws-ebs-csi-driver`, `aws-efs-csi-driver`, and `aws-mountpoint-s3-csi-driver` in a second apply after associations exist. Karpenter associations are configured with `karpenter`, not `pod_identities`.
 input_table: |
   | create | Whether to create this EKS cluster. | `bool` | `true` | no |
@@ -553,3 +762,18 @@ input_table: |
   | aws_load_balancer_controller.public_subnet_name | Tag filter for public subnets (e.g. `"*-public*"`). | `string` | (from metadata) | no |
   | aws_load_balancer_controller.private_subnet_name | Tag filter for private subnets (e.g. `"*-private*"`). | `string` | (from metadata) | no |
   | pod_identities | Map of Pod Identity roles. Each entry needs `namespace` and `service_account`; optional `attach_aws_lb_controller_policy`, `attach_aws_ebs_csi_policy`, `policy_statements`. | `map(any)` | `{}` | no |
+  | components | Map of group → step to install cluster software (Helm / kubectl). Order is lexicographic by group key, then step key. | `map(any)` | `{}` | no |
+  | components.<group>.<step>.kind | Step kind: `kubectl`, `helm`, or `kustomize`. | `string` | — | yes |
+  | components.<group>.<step>.source | `url` / `file` / `inline` (kubectl), `repo` / `file` (helm), `file` / `url` (kustomize). | `string` | — | no |
+  | components.<group>.<step>.url | Remote manifest (`kubectl` / `kustomize` with `source = url`). | `string` | `null` | no |
+  | components.<group>.<step>.path | Local file or directory packed into S3 (`source = file`). | `string` | `null` | no |
+  | components.<group>.<step>.yaml | Inline Kubernetes YAML (`kubectl` with `source = inline`). | `string` | `null` | no |
+  | components.<group>.<step>.repository | Helm repo URL or `oci://…` (`helm` with `source = repo`). | `string` | `null` | no |
+  | components.<group>.<step>.chart | Helm chart name. | `string` | `null` | no |
+  | components.<group>.<step>.version | Helm chart version. | `string` | `null` | no |
+  | components.<group>.<step>.release | Helm release name. | `string` | `null` | no |
+  | components.<group>.<step>.namespace | Helm release namespace. | `string` | `null` | no |
+  | components.<group>.<step>.create_namespace | Pass `--create-namespace` to Helm. | `bool` | `false` | no |
+  | components.<group>.<step>.values | Inline Helm values YAML (packed as `values.yaml`). | `string` | `null` | no |
+  | components.<group>.<step>.values_file | Path to a local Helm values file. | `string` | `null` | no |
+  | components.<group>.<step>.flags | Extra argv for kubectl/helm (e.g. `--server-side`, `--wait`). | `list(string)` | `[]` | no |

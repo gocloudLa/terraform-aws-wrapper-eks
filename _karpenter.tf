@@ -20,7 +20,7 @@ module "karpenter" {
   for_each = var.eks_parameters
 
   # Parámetros generales
-  create       = try(each.value.karpenter.create, var.eks_defaults.karpenter.create, false)
+  create       = local.karpenter_enabled[each.key]
   tags         = merge(local.common_tags, try(each.value.karpenter.aws_resources_tags, var.eks_defaults.karpenter.aws_resources_tags, null))
   cluster_name = module.eks[each.key].cluster_name
 
@@ -86,18 +86,11 @@ module "karpenter" {
 /*----------------------------------------------------------------------*/
 
 locals {
-  # Filtrar solo los clusters que tengan habilitado karpenter (si no existe, se asume false).
-  karpenter_clusters = {
-    for cluster, values in var.eks_parameters :
-    cluster => values
-  }
-  # esta validacion genera el depdendecia ciclica
-
   # Tags de subnets VPC por clúster (solo valor cambia, key fijo)
   karpenter_vpc_subnet_tags = {
     for cluster, values in var.eks_parameters :
     cluster => (
-      try(values.karpenter.create, false)
+      local.karpenter_enabled[cluster]
       ? {
         "karpenter.sh/discovery" = try(values.karpenter.vpc_subnet_tag_value, "${local.common_name}-${cluster}")
       }
@@ -109,7 +102,7 @@ locals {
   karpenter_security_group_node_tags = {
     for cluster, values in var.eks_parameters :
     cluster => (
-      try(values.karpenter.create, false)
+      local.karpenter_enabled[cluster]
       ? {
         "karpenter.sh/discovery" = try(values.karpenter.security_group_node_tag_value, "${local.common_name}-${cluster}")
       }
@@ -117,31 +110,29 @@ locals {
     )
   }
 
-  # Para cada cluster filtrado, obtenemos la lista de subnets y asignamos un mapa de tags.
-  karpenter_subnets = flatten([
-    for cluster, values in local.karpenter_clusters : [
-      for subnet_id in data.aws_subnets.this[cluster].ids : {
-        cluster   = cluster
-        subnet_id = subnet_id
-        # Usamos los tags definidos en el bloque karpenter, o por defecto.
-        tags = local.karpenter_vpc_subnet_tags[cluster]
-      } if try(values.karpenter.create, false)
-    ]
-  ])
+  # Flattened subnet tags. Key: "${subnet_id}-${tag_key}"
+  karpenter_subnet_tags_tmp = [
+    for cluster, values in try(var.eks_parameters, {}) : [
+      for subnet_id in data.aws_subnets.this[cluster].ids : [
+        for tag_key, tag_value in local.karpenter_vpc_subnet_tags[cluster] : {
+          "${subnet_id}-${tag_key}" = {
+            subnet_id = subnet_id
+            tag_key   = tag_key
+            tag_value = tag_value
+          }
+        }
+      ]
+    ] if local.karpenter_enabled[cluster]
+  ]
 
-  # Aplanamos el mapa de tags para iterar de forma individual.
-  karpenter_subnet_tags = merge([
-    for subnet in local.karpenter_subnets : {
-      for tag_key, tag_value in subnet.tags :
-      "${subnet.subnet_id}::${tag_key}" => {
-        subnet_id = subnet.subnet_id
-        tag_key   = tag_key
-        tag_value = tag_value
-      }
-    }
-  ]...)
+  karpenter_subnet_tags = merge(flatten(local.karpenter_subnet_tags_tmp)...)
 }
 
+# output "debug_karpenter_subnet_tags" {
+#   value = local.karpenter_subnet_tags
+# }
+
+# Key: "${subnet_id}-${tag_key}"
 resource "aws_ec2_tag" "karpenter_subnet_extra_tags" {
   for_each    = local.karpenter_subnet_tags
   resource_id = each.value.subnet_id

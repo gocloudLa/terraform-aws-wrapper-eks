@@ -8,7 +8,7 @@ locals {
           key     = id_key
         })
       }
-    ] if can(values.pod_identities)
+    ] if local.pod_identities_enabled[cluster]
   ]
 
   pod_identities = merge(flatten(local.pod_identities_tmp)...)
@@ -18,11 +18,11 @@ locals {
 #   value = local.pod_identities
 # }
 
+# Key: "${cluster}-${identity}"
 module "pod_identity" {
   source  = "terraform-aws-modules/eks-pod-identity/aws"
   version = "2.8.0"
 
-  # Key: "${cluster}-${identity}"
   for_each = local.pod_identities
 
   create          = true

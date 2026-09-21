@@ -15,7 +15,8 @@ The main purpose is to set up one or more EKS clusters with configurable compute
 - **Karpenter**: Cluster with Karpenter AWS resources (IAM, SQS, tags) and a controller node group; deploy Karpenter Helm separately.
 - **Defaults and addons**: Cluster version, endpoint access, control plane logging, CoreDNS, kube-proxy, VPC CNI, EKS Pod Identity Agent.
 - **AWS Load Balancer Controller**: Optional public/private subnet tagging for ingress (enabled in the node-group cluster).
-- **EKS Pod Identity**: `pod_identities` for LBC, EBS CSI, and a custom S3 example. Helm for LBC is installed outside this module.
+- **EKS Pod Identity**: `pod_identities` for LBC, EBS CSI, and a custom S3 example. Helm for LBC is installed outside this module on `ex-node-group`.
+- **Cluster components**: `ex-components` (`create = false`) covers recipe, kubectl file/inline/url, and helm repo/file. Drop groups to apply a subset.
 
 ## 🚀 Quick Start
 
