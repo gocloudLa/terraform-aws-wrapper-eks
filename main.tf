@@ -8,7 +8,7 @@ module "eks" {
   /* Common                                                               */
   /*----------------------------------------------------------------------*/
 
-  create           = try(each.value.create, var.eks_defaults.create, true)
+  create           = local.cluster_enabled[each.key]
   tags             = try(each.value.tags, var.eks_defaults.tags, local.common_tags)
   prefix_separator = try(each.value.prefix_separator, var.eks_defaults.prefix_separator, "-") # Revisar valor default
 
@@ -103,7 +103,7 @@ module "eks" {
   node_security_group_description              = try(each.value.node_security_group_description, var.eks_defaults.node_security_group_description, "EKS node shared security group")
   node_security_group_additional_rules         = try(each.value.node_security_group_additional_rules, var.eks_defaults.node_security_group_additional_rules, {})
   node_security_group_enable_recommended_rules = try(each.value.node_security_group_enable_recommended_rules, var.eks_defaults.node_security_group_enable_recommended_rules, true)
-  node_security_group_tags                     = merge(try(each.value.node_security_group_tags, var.eks_defaults.node_security_group_tags, {}), try(each.value.karpenter.create, false) ? local.karpenter_security_group_node_tags[each.key] : {})
+  node_security_group_tags                     = merge(try(each.value.node_security_group_tags, var.eks_defaults.node_security_group_tags, {}), local.karpenter_security_group_node_tags[each.key])
 
   /*----------------------------------------------------------------------*/
   /* IRSA                                                                 */

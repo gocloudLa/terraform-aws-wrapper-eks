@@ -51,3 +51,14 @@ output "pod_identity_associations" {
     }
   }
 }
+
+output "components" {
+  description = "EKS components apply results keyed by cluster"
+  value = {
+    for k, v in module.eks_components : k => {
+      summary        = v.summary
+      task_arn       = v.task_arn
+      log_group_name = v.log_group_name
+    }
+  }
+}

@@ -5,7 +5,7 @@ module "wrapper_eks" {
 
   eks_parameters = {
     ex-node-group = {
-      create = true
+      create = false
       # Default: false (private API). Public so kubectl works without VPN/bastion.
       cluster_endpoint_public_access = true
       # To use a custom cluster name instead of the one derived from metadata:
@@ -87,9 +87,8 @@ module "wrapper_eks" {
         }
       }
     }
-
     ex-karpenter = {
-      create = true
+      create = false
       # To use a custom cluster name instead of the one derived from metadata:
       # cluster_name = "ex-karpenter"
 
@@ -121,6 +120,257 @@ module "wrapper_eks" {
       }
 
       # Use Karpenter for dynamic capacity; define your Provisioner/NodePool after deployment.
+    }
+    ex-components = {
+      create = true
+
+      cluster_endpoint_public_access = true
+
+      cluster_addons = {
+        vpc-cni                = { before_compute = true }
+        eks-pod-identity-agent = { before_compute = true }
+        coredns                = {}
+        kube-proxy             = {}
+      }
+
+      aws_load_balancer_controller = {
+        create                 = true
+        public_ingress_create  = true
+        private_ingress_create = true
+      }
+
+      pod_identities = {
+        aws-load-balancer-controller = {
+          namespace                       = "kube-system"
+          service_account                 = "aws-load-balancer-controller"
+          attach_aws_lb_controller_policy = true
+        }
+      }
+
+      # Every kind/source in v1 except kustomize. Order is lexicographic. Drop groups to apply a subset.
+      components = {
+        "10-lbc" = {
+          "00" = {
+            kind   = "kubectl"
+            source = "url"
+            url    = "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml"
+            flags  = ["--server-side=true"]
+          }
+          "01" = {
+            kind   = "kubectl"
+            source = "url"
+            url    = "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v3.5.0/config/crd/gateway/gateway-crds.yaml"
+          }
+          "02" = {
+            kind             = "helm"
+            source           = "repo"
+            repository       = "https://aws.github.io/eks-charts"
+            chart            = "aws-load-balancer-controller"
+            version          = "3.5.0"
+            release          = "aws-load-balancer-controller"
+            namespace        = "kube-system"
+            create_namespace = false
+            flags            = ["--wait", "--timeout", "10m"]
+            values           = <<-YAML
+              clusterName: ${local.common_name}-ex-components
+              region: ${local.metadata.aws_region}
+              vpcId: ${data.aws_vpc.this.id}
+              defaultTargetType: ip
+              serviceAccount:
+                create: true
+                name: aws-load-balancer-controller
+            YAML
+          }
+          "03" = {
+            kind   = "kubectl"
+            source = "inline"
+            yaml   = <<-YAML
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: aws-alb
+              spec:
+                controllerName: gateway.k8s.aws/alb
+              ---
+              apiVersion: gateway.k8s.aws/v1
+              kind: LoadBalancerConfiguration
+              metadata:
+                name: public-alb
+                namespace: default
+              spec:
+                scheme: internet-facing
+                listenerConfigurations:
+                  - protocolPort: HTTPS:443
+                    defaultCertificate: ${data.aws_acm_certificate.this.arn}
+              ---
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: public-alb
+                namespace: default
+              spec:
+                gatewayClassName: aws-alb
+                infrastructure:
+                  parametersRef:
+                    group: gateway.k8s.aws
+                    kind: LoadBalancerConfiguration
+                    name: public-alb
+                listeners:
+                  - name: http
+                    protocol: HTTP
+                    port: 80
+                    allowedRoutes:
+                      namespaces:
+                        from: All
+                  - name: https
+                    protocol: HTTPS
+                    port: 443
+                    allowedRoutes:
+                      namespaces:
+                        from: All
+            YAML
+          }
+        }
+
+        # After apply, test without DNS:
+        #   aws eks update-kubeconfig --name dmc-lab-example-ex-components --region us-east-2
+        #   HOST=hello.lab.democorp.cloud
+        #   ALB=$(kubectl -n default get gateway public-alb -o jsonpath='{.status.addresses[0].value}')
+        #   IP=$(dig +short "$ALB" | head -n1)
+        #   curl -v --resolve "${HOST}:443:${IP}" "https://${HOST}/"
+        "15-sample-app" = {
+          "00" = {
+            kind   = "kubectl"
+            source = "inline"
+            yaml   = <<-YAML
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: hello
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app: hello
+                template:
+                  metadata:
+                    labels:
+                      app: hello
+                  spec:
+                    containers:
+                      - name: nginx
+                        image: public.ecr.aws/nginx/nginx:stable
+                        ports:
+                          - containerPort: 80
+              ---
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: hello
+              spec:
+                selector:
+                  app: hello
+                ports:
+                  - port: 80
+              ---
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: hello
+              spec:
+                parentRefs:
+                  - name: public-alb
+                    sectionName: https
+                hostnames:
+                  - hello.${local.zone_public}
+                rules:
+                  - backendRefs:
+                      - name: hello
+                        port: 80
+            YAML
+          }
+        }
+
+        # "20-file" = {
+        #   "00" = {
+        #     kind   = "kubectl"
+        #     source = "file"
+        #     path   = "${path.module}/components/k8s/gateway.yaml"
+        #   }
+        # }
+
+        # "35-wordpress" = {
+        #   "00" = {
+        #     kind             = "helm"
+        #     source           = "repo"
+        #     repository       = "oci://registry-1.docker.io/bitnamicharts"
+        #     chart            = "wordpress"
+        #     version          = "24.2.3"
+        #     release          = "wordpress"
+        #     namespace        = "wordpress"
+        #     create_namespace = true
+        #     values           = <<-YAML
+        #       service:
+        #         type: ClusterIP
+        #       persistence:
+        #         enabled: false
+        #       mariadb:
+        #         primary:
+        #           persistence:
+        #             enabled: false
+        #     YAML
+        #   }
+        # }
+
+        # "40-url" = {
+        #   "00" = {
+        #     kind   = "kubectl"
+        #     source = "url"
+        #     url    = "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/standard-install.yaml"
+        #     flags  = ["--server-side=true"]
+        #   }
+        # }
+
+        # "50-namespaces" = {
+        #   "00" = {
+        #     kind   = "kubectl"
+        #     source = "inline"
+        #     yaml   = <<-YAML
+        #       apiVersion: v1
+        #       kind: Namespace
+        #       metadata:
+        #         name: app-a
+        #       ---
+        #       apiVersion: v1
+        #       kind: Namespace
+        #       metadata:
+        #         name: app-b
+        #     YAML
+        #   }
+        # }
+
+        # "55-helm-file" = {
+        #   "00" = {
+        #     kind             = "helm"
+        #     source           = "file"
+        #     path             = "${path.module}/components/demo"
+        #     release          = "demo"
+        #     namespace        = "demo"
+        #     create_namespace = true
+        #   }
+        # }
+      }
+
+      managed_node_groups = {
+        default = {
+          ami_type       = "AL2023_x86_64_STANDARD"
+          instance_types = ["t3.medium"]
+          capacity_type  = "ON_DEMAND"
+          min_size       = 1
+          desired_size   = 2
+          max_size       = 3
+        }
+      }
     }
     ex-auto-mode = {
       # Example with EKS Auto Mode (no classic node groups)
