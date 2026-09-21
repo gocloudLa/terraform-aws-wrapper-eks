@@ -27,10 +27,10 @@ Terraform wrapper for Amazon EKS. Creates clusters, node groups, and integration
 ### 🔗 External Modules
 | Name | Version |
 |------|------:|
-| <a href="https://github.com/terraform-aws-modules/terraform-aws-eks-pod-identity" target="_blank">terraform-aws-modules/eks-pod-identity/aws</a> | 2.8.0 |
+| <a href="https://github.com/terraform-aws-modules/terraform-aws-eks-pod-identity" target="_blank">terraform-aws-modules/eks-pod-identity/aws</a> | 2.9.0 |
 | <a href="https://github.com/terraform-aws-modules/terraform-aws-eks" target="_blank">terraform-aws-modules/eks/aws</a> | 21.25.1 |
 | <a href="https://github.com/terraform-aws-modules/terraform-aws-kms" target="_blank">terraform-aws-modules/kms/aws</a> | 4.0.0 |
-| <a href="https://github.com/terraform-aws-modules/terraform-aws-lambda" target="_blank">terraform-aws-modules/lambda/aws</a> | 8.7.0 |
+| <a href="https://github.com/terraform-aws-modules/terraform-aws-lambda" target="_blank">terraform-aws-modules/lambda/aws</a> | 8.8.0 |
 
 
 
