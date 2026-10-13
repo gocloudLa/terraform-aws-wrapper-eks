@@ -122,7 +122,7 @@ module "wrapper_eks" {
       # Use Karpenter for dynamic capacity; define your Provisioner/NodePool after deployment.
     }
     ex-components = {
-      create = true
+      create = false
 
       cluster_endpoint_public_access = true
 
@@ -369,6 +369,1111 @@ module "wrapper_eks" {
           min_size       = 1
           desired_size   = 2
           max_size       = 3
+        }
+      }
+    }
+
+    # Observability: Grafana + Prometheus/Thanos (metrics) + Loki/Alloy (logs), todo en S3, exposed through the ALB Gateway.
+    # Set create = true to deploy. Grafana: https://grafana.<zone_public>.
+    #   aws eks update-kubeconfig --name dmc-lab-example-ex-observability --region us-east-2
+    #   kubectl -n monitoring get secret kps-grafana -o jsonpath='{.data.admin-password}' | base64 -d
+    #   kubectl -n monitoring port-forward svc/kps-grafana 3000:80     # alternative to DNS/ALB
+    ex-observability = {
+      create = true
+
+      cluster_endpoint_public_access = true
+
+      cluster_addons = {
+        vpc-cni                = { before_compute = true }
+        eks-pod-identity-agent = { before_compute = true }
+        coredns                = {}
+        kube-proxy             = {}
+        aws-ebs-csi-driver     = {}
+      }
+
+      aws_load_balancer_controller = {
+        create                 = true
+        public_ingress_create  = true
+        private_ingress_create = true
+      }
+
+      pod_identities = {
+        aws-load-balancer-controller = {
+          namespace                       = "kube-system"
+          service_account                 = "aws-load-balancer-controller"
+          attach_aws_lb_controller_policy = true
+        }
+        # Association for the EBS CSI addon. Created after the cluster, so the addon
+        # itself must wait for a second apply. See cluster_addons above.
+        aws-ebs-csi-driver = {
+          namespace                 = "kube-system"
+          service_account           = "ebs-csi-controller-sa"
+          attach_aws_ebs_csi_policy = true
+        }
+        # ServiceAccounts de monitoring -> S3, cada uno solo a su bucket.
+        # Los nombres deben coincidir con los de los values de Helm (kps-prometheus, thanos-store, thanos-compact, loki).
+        thanos-sidecar = {
+          namespace       = "monitoring"
+          service_account = "kps-prometheus"
+          policy_statements = [
+            {
+              sid       = "ListBucket"
+              actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+              resources = [module.observability_bucket["thanos"].s3_bucket_arn]
+            },
+            {
+              sid = "Objects"
+              actions = [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject",
+                "s3:AbortMultipartUpload",
+                "s3:ListMultipartUploadParts",
+              ]
+              resources = ["${module.observability_bucket["thanos"].s3_bucket_arn}/*"]
+            },
+          ]
+        }
+        thanos-store = {
+          namespace       = "monitoring"
+          service_account = "thanos-store"
+          policy_statements = [
+            {
+              sid       = "ListBucket"
+              actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+              resources = [module.observability_bucket["thanos"].s3_bucket_arn]
+            },
+            {
+              sid = "Objects"
+              actions = [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject",
+                "s3:AbortMultipartUpload",
+                "s3:ListMultipartUploadParts",
+              ]
+              resources = ["${module.observability_bucket["thanos"].s3_bucket_arn}/*"]
+            },
+          ]
+        }
+        thanos-compact = {
+          namespace       = "monitoring"
+          service_account = "thanos-compact"
+          policy_statements = [
+            {
+              sid       = "ListBucket"
+              actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+              resources = [module.observability_bucket["thanos"].s3_bucket_arn]
+            },
+            {
+              sid = "Objects"
+              actions = [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject",
+                "s3:AbortMultipartUpload",
+                "s3:ListMultipartUploadParts",
+              ]
+              resources = ["${module.observability_bucket["thanos"].s3_bucket_arn}/*"]
+            },
+          ]
+        }
+        loki = {
+          namespace       = "monitoring"
+          service_account = "loki"
+          policy_statements = [
+            {
+              sid       = "ListBucket"
+              actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+              resources = [module.observability_bucket["loki"].s3_bucket_arn]
+            },
+            {
+              sid = "Objects"
+              actions = [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject",
+                "s3:AbortMultipartUpload",
+                "s3:ListMultipartUploadParts",
+              ]
+              resources = ["${module.observability_bucket["loki"].s3_bucket_arn}/*"]
+            },
+          ]
+        }
+      }
+
+      components = {
+        # Gateway API + ALB controller + public Gateway (same as ex-components).
+        "10-lbc" = {
+          "00" = {
+            kind   = "kubectl"
+            source = "url"
+            url    = "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml"
+            flags  = ["--server-side=true"]
+          }
+          "01" = {
+            kind   = "kubectl"
+            source = "url"
+            url    = "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v3.5.0/config/crd/gateway/gateway-crds.yaml"
+          }
+          "02" = {
+            kind             = "helm"
+            source           = "repo"
+            repository       = "https://aws.github.io/eks-charts"
+            chart            = "aws-load-balancer-controller"
+            version          = "3.5.0"
+            release          = "aws-load-balancer-controller"
+            namespace        = "kube-system"
+            create_namespace = false
+            flags            = ["--wait", "--timeout", "10m"]
+            values           = <<-YAML
+              clusterName: ${local.common_name}-ex-observability
+              region: ${local.metadata.aws_region}
+              vpcId: ${data.aws_vpc.this.id}
+              defaultTargetType: ip
+              # Reutiliza el certificado del webhook en cada upgrade. Sin esto, cada apply que cambia
+              # los components lo regenera y los Services que se crean enseguida fallan con x509.
+              keepTLSSecret: true
+              serviceAccount:
+                create: true
+                name: aws-load-balancer-controller
+            YAML
+          }
+          "03" = {
+            kind   = "kubectl"
+            source = "inline"
+            yaml   = <<-YAML
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: aws-alb
+              spec:
+                controllerName: gateway.k8s.aws/alb
+              ---
+              apiVersion: gateway.k8s.aws/v1
+              kind: LoadBalancerConfiguration
+              metadata:
+                name: public-alb
+                namespace: default
+              spec:
+                scheme: internet-facing
+                listenerConfigurations:
+                  - protocolPort: HTTPS:443
+                    defaultCertificate: ${data.aws_acm_certificate.this.arn}
+              ---
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: public-alb
+                namespace: default
+              spec:
+                gatewayClassName: aws-alb
+                infrastructure:
+                  parametersRef:
+                    group: gateway.k8s.aws
+                    kind: LoadBalancerConfiguration
+                    name: public-alb
+                listeners:
+                  - name: https
+                    protocol: HTTPS
+                    port: 443
+                    allowedRoutes:
+                      namespaces:
+                        from: All
+            YAML
+          }
+        }
+
+        # Namespace `monitoring` + gp3 StorageClass.
+        # Needs aws-ebs-csi-driver ACTIVE (second apply). On the first apply comment
+        # this group too: Prometheus and Loki --wait time out while PVCs stay unbound.
+        "20-monitoring" = {
+          "10-storage" = {
+            kind   = "kubectl"
+            source = "inline"
+            yaml   = <<-YAML
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: monitoring
+              ---
+              apiVersion: storage.k8s.io/v1
+              kind: StorageClass
+              metadata:
+                name: gp3
+              provisioner: ebs.csi.aws.com
+              parameters:
+                type: gp3
+                encrypted: "true"
+              volumeBindingMode: WaitForFirstConsumer
+              allowVolumeExpansion: true
+            YAML
+          }
+          # Thanos: query + store gateway + compact (los bloques viven en S3). Va antes de kps
+          # porque crea el Secret thanos-objstore que usa el sidecar.
+          "15-thanos" = {
+            kind             = "helm"
+            source           = "repo"
+            repository       = "https://stevehipwell.github.io/helm-charts/"
+            chart            = "thanos"
+            version          = "1.24.1"
+            release          = "thanos"
+            namespace        = "monitoring"
+            create_namespace = false
+            flags            = ["--wait", "--timeout", "10m"]
+            values           = <<-YAML
+              objstoreConfig:
+                name: thanos-objstore
+                value: |-
+                  type: S3
+                  config:
+                    bucket: ${module.observability_bucket["thanos"].s3_bucket_id}
+                    endpoint: s3.${local.metadata.aws_region}.amazonaws.com
+                    region: ${local.metadata.aws_region}
+              # Query tambien consulta al sidecar de Prometheus (datos recientes).
+              additionalEndpoints:
+                - dnssrv+_grpc._tcp.kps-thanos-discovery.monitoring.svc.cluster.local
+              storeGateway:
+                serviceAccount:
+                  name: thanos-store
+                persistence:
+                  enabled: true
+                  storageClass: gp3
+                  size: 5Gi
+              compact:
+                enabled: true
+                serviceAccount:
+                  name: thanos-compact
+                persistence:
+                  enabled: true
+                  storageClass: gp3
+                  size: 10Gi
+                # Retencion de metricas en S3: 180 dias.
+                extraArgs:
+                  - --retention.resolution-raw=180d
+                  - --retention.resolution-5m=180d
+                  - --retention.resolution-1h=180d
+            YAML
+          }
+          # Prometheus (2 dias local + sidecar de Thanos hacia S3) + Alertmanager + Grafana.
+          "20-metrics" = {
+            kind             = "helm"
+            source           = "repo"
+            repository       = "https://prometheus-community.github.io/helm-charts"
+            chart            = "kube-prometheus-stack"
+            version          = "92.3.0"
+            release          = "kps"
+            namespace        = "monitoring"
+            create_namespace = false
+            flags            = ["--wait", "--timeout", "15m"]
+            values           = <<-YAML
+              fullnameOverride: kps
+              prometheus:
+                thanosService:
+                  enabled: true
+                prometheusSpec:
+                  retention: 2d
+                  thanos:
+                    objectStorageConfig:
+                      existingSecret:
+                        name: thanos-objstore
+                        key: config
+                  storageSpec:
+                    volumeClaimTemplate:
+                      spec:
+                        storageClassName: gp3
+                        accessModes: ["ReadWriteOnce"]
+                        resources:
+                          requests:
+                            storage: 10Gi
+                  resources:
+                    requests: { cpu: 200m, memory: 1Gi }
+              alertmanager:
+                alertmanagerSpec:
+                  storage:
+                    volumeClaimTemplate:
+                      spec:
+                        storageClassName: gp3
+                        accessModes: ["ReadWriteOnce"]
+                        resources:
+                          requests:
+                            storage: 2Gi
+              grafana:
+                # Solo se publican los 3 dashboards de este ejemplo (Logs, Namespace Resources, Nodes).
+                defaultDashboardsEnabled: false
+                # El chart genera una password aleatoria (Secret kps-grafana, key admin-password).
+                adminPassword: ""
+                persistence:
+                  enabled: true
+                  storageClassName: gp3
+                  size: 5Gi
+                grafana.ini:
+                  server:
+                    root_url: https://grafana.${local.zone_public}
+                additionalDataSources:
+                  - name: Loki
+                    type: loki
+                    uid: loki
+                    access: proxy
+                    url: http://loki.monitoring.svc.cluster.local:3100
+                sidecar:
+                  datasources:
+                    # El datasource "Prometheus" apunta a Thanos Query (reciente + historico en S3).
+                    url: http://thanos-query.monitoring.svc.cluster.local:10902
+            YAML
+          }
+          # Logs: Loki SingleBinary sobre S3 (365 dias). El disco gp3 es solo WAL.
+          "30-logs-loki" = {
+            kind             = "helm"
+            source           = "repo"
+            repository       = "https://grafana-community.github.io/helm-charts"
+            chart            = "loki"
+            version          = "18.15.1"
+            release          = "loki"
+            namespace        = "monitoring"
+            create_namespace = false
+            flags            = ["--wait", "--timeout", "15m"]
+            values           = <<-YAML
+              deploymentMode: SingleBinary
+              serviceAccount:
+                name: loki
+              loki:
+                auth_enabled: false
+                commonConfig:
+                  replication_factor: 1
+                storage:
+                  type: s3
+                  bucketNames:
+                    chunks: ${module.observability_bucket["loki"].s3_bucket_id}
+                    ruler: ${module.observability_bucket["loki"].s3_bucket_id}
+                  s3:
+                    region: ${local.metadata.aws_region}
+                schemaConfig:
+                  configs:
+                    - from: "2024-04-01"
+                      store: tsdb
+                      object_store: s3
+                      schema: v13
+                      index:
+                        prefix: loki_index_
+                        period: 24h
+                limits_config:
+                  retention_period: 8760h
+                compactor:
+                  retention_enabled: true
+                  delete_request_store: s3
+              singleBinary:
+                replicas: 1
+                persistence:
+                  size: 10Gi
+                  storageClass: gp3
+              write:
+                replicas: 0
+              read:
+                replicas: 0
+              backend:
+                replicas: 0
+              gateway:
+                enabled: false
+              chunksCache:
+                enabled: false
+              resultsCache:
+                enabled: false
+              lokiCanary:
+                enabled: false
+              test:
+                enabled: false
+            YAML
+          }
+          # Alloy (un pod por nodo) lee los logs de los pods y los manda a Loki.
+          "31-logs-alloy" = {
+            kind             = "helm"
+            source           = "repo"
+            repository       = "https://grafana.github.io/helm-charts"
+            chart            = "alloy"
+            version          = "1.13.1"
+            release          = "alloy"
+            namespace        = "monitoring"
+            create_namespace = false
+            flags            = ["--wait", "--timeout", "10m"]
+            values           = <<-YAML
+              controller:
+                type: daemonset
+              alloy:
+                configMap:
+                  content: |
+                    discovery.kubernetes "pods" {
+                      role = "pod"
+                      selectors {
+                        role  = "pod"
+                        field = "spec.nodeName=" + coalesce(sys.env("HOSTNAME"), "")
+                      }
+                    }
+
+                    discovery.relabel "pods" {
+                      targets = discovery.kubernetes.pods.targets
+                      rule {
+                        source_labels = ["__meta_kubernetes_namespace"]
+                        target_label  = "namespace"
+                      }
+                      rule {
+                        source_labels = ["__meta_kubernetes_pod_name"]
+                        target_label  = "pod"
+                      }
+                      rule {
+                        source_labels = ["__meta_kubernetes_pod_container_name"]
+                        target_label  = "container"
+                      }
+                    }
+
+                    loki.source.kubernetes "pods" {
+                      targets    = discovery.relabel.pods.output
+                      forward_to = [loki.write.default.receiver]
+                    }
+
+                    loki.write "default" {
+                      endpoint {
+                        url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+                      }
+                    }
+            YAML
+          }
+          # Dashboard "Kubernetes Logs" (Loki): filtros por namespace, pod y texto. El sidecar de Grafana lo carga solo.
+          "32-dashboard-logs" = {
+            kind   = "kubectl"
+            source = "inline"
+            yaml   = <<-YAML
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: dashboard-kubernetes-logs
+                namespace: monitoring
+                labels:
+                  grafana_dashboard: "1"
+              data:
+                kubernetes-logs.json: |
+                  {
+                    "title": "Kubernetes Logs",
+                    "uid": "k8s-logs",
+                    "schemaVersion": 39,
+                    "refresh": "30s",
+                    "time": { "from": "now-1h", "to": "now" },
+                    "templating": {
+                      "list": [
+                        {
+                          "name": "namespace", "type": "query", "label": "Namespace",
+                          "datasource": { "type": "loki", "uid": "loki" },
+                          "query": "label_values(namespace)", "refresh": 2, "sort": 1
+                        },
+                        {
+                          "name": "pod", "type": "query", "label": "Pod",
+                          "datasource": { "type": "loki", "uid": "loki" },
+                          "query": "label_values({namespace=\"$namespace\"}, pod)", "refresh": 2,
+                          "multi": true, "includeAll": true, "allValue": ".*"
+                        },
+                        {
+                          "name": "pod_filter",
+                          "type": "textbox",
+                          "label": "Pod regex (e.g. service-pepe-.*)",
+                          "query": ".*"
+                        },
+                        { "name": "search", "type": "textbox", "label": "Search", "query": "" }
+                      ]
+                    },
+                    "panels": [
+                      {
+                        "id": 1, "type": "timeseries", "title": "Log volume",
+                        "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+                        "datasource": { "type": "loki", "uid": "loki" },
+                        "targets": [{
+                          "refId": "A",
+                          "expr": "sum by (pod) (count_over_time({namespace=\"$namespace\", pod=~\"$pod\", pod=~\"$pod_filter\"} |~ \"(?i)$search\" [$__interval]))"
+                        }]
+                      },
+                      {
+                        "id": 2, "type": "logs", "title": "Logs",
+                        "gridPos": { "h": 18, "w": 24, "x": 0, "y": 6 },
+                        "datasource": { "type": "loki", "uid": "loki" },
+                        "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true },
+                        "targets": [{
+                          "refId": "A",
+                          "expr": "{namespace=\"$namespace\", pod=~\"$pod\", pod=~\"$pod_filter\"} |~ \"(?i)$search\""
+                        }]
+                      }
+                    ]
+                  }
+            YAML
+          }
+          # Dashboard "Namespace Resources": CPU, memoria, red y estado de pods por namespace.
+          "33-dashboard-namespace" = {
+            kind   = "kubectl"
+            source = "inline"
+            yaml   = <<-YAML
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: dashboard-namespace-resources
+                namespace: monitoring
+                labels:
+                  grafana_dashboard: "1"
+              data:
+                namespace-resources.json: |
+                  {
+                    "title": "Namespace Resources",
+                    "uid": "k8s-namespace",
+                    "schemaVersion": 39,
+                    "refresh": "1m",
+                    "time": {
+                      "from": "now-3h",
+                      "to": "now"
+                    },
+                    "templating": {
+                      "list": [
+                        {
+                          "name": "namespace",
+                          "type": "query",
+                          "label": "Namespace",
+                          "datasource": {
+                            "type": "prometheus",
+                            "uid": "prometheus"
+                          },
+                          "query": "label_values(kube_namespace_status_phase, namespace)",
+                          "refresh": 2,
+                          "sort": 1
+                        },
+                        {
+                          "name": "pod",
+                          "type": "query",
+                          "label": "Pod",
+                          "datasource": {
+                            "type": "prometheus",
+                            "uid": "prometheus"
+                          },
+                          "query": "label_values(kube_pod_info{namespace=\"$namespace\"}, pod)",
+                          "refresh": 2,
+                          "multi": true,
+                          "includeAll": true,
+                          "allValue": ".*"
+                        },
+                        {
+                          "name": "pod_filter",
+                          "type": "textbox",
+                          "label": "Pod regex (e.g. service-pepe-.*)",
+                          "query": ".*"
+                        }
+                      ]
+                    },
+                    "panels": [
+                      {
+                        "id": 1,
+                        "type": "stat",
+                        "title": "Running pods",
+                        "gridPos": {
+                          "h": 4,
+                          "w": 6,
+                          "x": 0,
+                          "y": 0
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "short"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum(kube_pod_status_phase{namespace=\"$namespace\", pod=~\"$pod\", pod=~\"$pod_filter\",phase=\"Running\"})"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 2,
+                        "type": "stat",
+                        "title": "Pending / Failed pods",
+                        "gridPos": {
+                          "h": 4,
+                          "w": 6,
+                          "x": 6,
+                          "y": 0
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "short"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum(kube_pod_status_phase{namespace=\"$namespace\", pod=~\"$pod\", pod=~\"$pod_filter\",phase=~\"Pending|Failed\"})"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 3,
+                        "type": "stat",
+                        "title": "Container restarts (1h)",
+                        "gridPos": {
+                          "h": 4,
+                          "w": 6,
+                          "x": 12,
+                          "y": 0
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "short"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"$namespace\", pod=~\"$pod\", pod=~\"$pod_filter\"}[1h]))"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 4,
+                        "type": "stat",
+                        "title": "Memory used",
+                        "gridPos": {
+                          "h": 4,
+                          "w": 6,
+                          "x": 18,
+                          "y": 0
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "bytes"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum(container_memory_working_set_bytes{namespace=\"$namespace\", pod=~\"$pod\", pod=~\"$pod_filter\",container!=\"\"})"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 5,
+                        "type": "timeseries",
+                        "title": "CPU by pod",
+                        "gridPos": {
+                          "h": 8,
+                          "w": 12,
+                          "x": 0,
+                          "y": 4
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "short"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", pod=~\"$pod\", pod=~\"$pod_filter\",container!=\"\"}[$__rate_interval]))",
+                            "legendFormat": "{{pod}}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 6,
+                        "type": "timeseries",
+                        "title": "Memory by pod",
+                        "gridPos": {
+                          "h": 8,
+                          "w": 12,
+                          "x": 12,
+                          "y": 4
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "bytes"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"$namespace\", pod=~\"$pod\", pod=~\"$pod_filter\",container!=\"\"})",
+                            "legendFormat": "{{pod}}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 7,
+                        "type": "timeseries",
+                        "title": "Network received by pod",
+                        "gridPos": {
+                          "h": 8,
+                          "w": 12,
+                          "x": 0,
+                          "y": 12
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "Bps"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum by (pod) (rate(container_network_receive_bytes_total{namespace=\"$namespace\", pod=~\"$pod\", pod=~\"$pod_filter\"}[$__rate_interval]))",
+                            "legendFormat": "{{pod}}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 8,
+                        "type": "timeseries",
+                        "title": "Network sent by pod",
+                        "gridPos": {
+                          "h": 8,
+                          "w": 12,
+                          "x": 12,
+                          "y": 12
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "Bps"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum by (pod) (rate(container_network_transmit_bytes_total{namespace=\"$namespace\", pod=~\"$pod\", pod=~\"$pod_filter\"}[$__rate_interval]))",
+                            "legendFormat": "{{pod}}"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+            YAML
+          }
+          # Dashboard "Nodes": estado y uso de CPU, memoria, disco y red de los nodos.
+          "34-dashboard-nodes" = {
+            kind   = "kubectl"
+            source = "inline"
+            yaml   = <<-YAML
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: dashboard-nodes
+                namespace: monitoring
+                labels:
+                  grafana_dashboard: "1"
+              data:
+                nodes.json: |
+                  {
+                    "title": "Nodes",
+                    "uid": "k8s-nodes",
+                    "schemaVersion": 39,
+                    "refresh": "1m",
+                    "time": {
+                      "from": "now-3h",
+                      "to": "now"
+                    },
+                    "templating": {
+                      "list": []
+                    },
+                    "panels": [
+                      {
+                        "id": 1,
+                        "type": "stat",
+                        "title": "Nodes Ready",
+                        "gridPos": {
+                          "h": 4,
+                          "w": 6,
+                          "x": 0,
+                          "y": 0
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "short"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum(kube_node_status_condition{condition=\"Ready\",status=\"true\"})"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 2,
+                        "type": "stat",
+                        "title": "Nodes not Ready",
+                        "gridPos": {
+                          "h": 4,
+                          "w": 6,
+                          "x": 6,
+                          "y": 0
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "short"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum(kube_node_status_condition{condition=\"Ready\",status!=\"true\"})"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 3,
+                        "type": "stat",
+                        "title": "Running pods",
+                        "gridPos": {
+                          "h": 4,
+                          "w": 6,
+                          "x": 12,
+                          "y": 0
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "short"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum(kubelet_running_pods)"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 4,
+                        "type": "stat",
+                        "title": "Pods not Running",
+                        "gridPos": {
+                          "h": 4,
+                          "w": 6,
+                          "x": 18,
+                          "y": 0
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "short"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum(kube_pod_status_phase{phase=~\"Pending|Failed|Unknown\"})"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 5,
+                        "type": "timeseries",
+                        "title": "CPU usage by node",
+                        "gridPos": {
+                          "h": 8,
+                          "w": 12,
+                          "x": 0,
+                          "y": 4
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "percentunit"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval]))",
+                            "legendFormat": "{{instance}}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 6,
+                        "type": "timeseries",
+                        "title": "Memory usage by node",
+                        "gridPos": {
+                          "h": 8,
+                          "w": 12,
+                          "x": 12,
+                          "y": 4
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "percentunit"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
+                            "legendFormat": "{{instance}}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 7,
+                        "type": "timeseries",
+                        "title": "Disk usage by node",
+                        "gridPos": {
+                          "h": 8,
+                          "w": 12,
+                          "x": 0,
+                          "y": 12
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "percentunit"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "1 - (node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\",mountpoint=\"/\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\",mountpoint=\"/\"})",
+                            "legendFormat": "{{instance}}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": 8,
+                        "type": "timeseries",
+                        "title": "Network by node",
+                        "gridPos": {
+                          "h": 8,
+                          "w": 12,
+                          "x": 12,
+                          "y": 12
+                        },
+                        "datasource": {
+                          "type": "prometheus",
+                          "uid": "prometheus"
+                        },
+                        "fieldConfig": {
+                          "defaults": {
+                            "unit": "Bps"
+                          },
+                          "overrides": []
+                        },
+                        "targets": [
+                          {
+                            "refId": "A",
+                            "expr": "sum by (instance) (rate(node_network_receive_bytes_total{device!~\"lo|veth.*|eni.*\"}[$__rate_interval]))",
+                            "legendFormat": "{{instance}}"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+            YAML
+          }
+          # https://grafana.<zone_public>
+          "40-expose" = {
+            kind   = "kubectl"
+            source = "inline"
+            yaml   = <<-YAML
+                apiVersion: gateway.networking.k8s.io/v1
+                kind: HTTPRoute
+                metadata:
+                  name: grafana
+                  namespace: monitoring
+                spec:
+                  parentRefs:
+                    - name: public-alb
+                      namespace: default
+                      sectionName: https
+                  hostnames:
+                    - grafana.${local.zone_public}
+                  rules:
+                    - backendRefs:
+                        - name: kps-grafana
+                          port: 80
+              YAML
+          }
+        }
+      }
+
+      # Stack chico (un pod por componente). EBS PVCs no funcionan en Fargate.
+      managed_node_groups = {
+        default = {
+          ami_type       = "AL2023_x86_64_STANDARD"
+          instance_types = ["t3.large"]
+          capacity_type  = "ON_DEMAND"
+          min_size       = 2
+          desired_size   = 2
+          max_size       = 4
         }
       }
     }

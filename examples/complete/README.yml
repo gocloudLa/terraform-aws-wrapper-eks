@@ -7,4 +7,5 @@ key_features:
   - "**Pod Identity** for LBC, EBS CSI, and a custom S3 example."
   - "**AWS Load Balancer Controller** subnet tags; install by hand or with `components`."
   - "**Cluster components** (`ex-components`): LBC + sample app on `hello.<zone_public>` during apply."
+  - "**Observability** (`ex-observability`): Grafana + Prometheus/Thanos + Loki/Alloy, all stored in S3, on `grafana.<zone_public>`."
   - "**Test ALB without DNS**: `curl --resolve` commands next to `15-sample-app` in `main.tf`."
